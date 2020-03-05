@@ -6,19 +6,26 @@ from __future__ import absolute_import, division, print_function
 
 from contextlib import contextmanager
 import imp
-from importlib import import_module, reload
+from importlib import import_module, metadata, reload, resources
 from importlib.util import cache_from_source, MAGIC_NUMBER
 import marshal
 import os
-from os.path import dirname, exists, join
+from os.path import dirname, exists, join, splitext
 import pkgutil
 import platform
 import shlex
+from shutil import rmtree
 from subprocess import check_output
 import sys
 from traceback import format_exc
 import types
 import unittest
+
+import pkg_resources as pr
+
+
+# Flags from PEP 3149.
+ABI_FLAGS = ""
 
 
 try:
@@ -33,9 +40,10 @@ else:
     from com.chaquo.python.android import AndroidPlatform
     APP_ZIP = "app.zip"
     REQS_COMMON_ZIP = "requirements-common.zip"
-    REQS_ABI_ZIP = "requirements-{}.zip".format(AndroidPlatform.ABI)
     multi_abi = len([name for name in context.getAssets().list("chaquopy")
                      if name.startswith("requirements")]) > 2
+    ABI = AndroidPlatform.ABI
+    REQS_ABI_ZIP = ("requirements-{}.zip".format(ABI) if multi_abi else REQS_COMMON_ZIP)
 
 def setUpModule():
     if API_LEVEL is None:
@@ -56,26 +64,43 @@ class TestAndroidPlatform(unittest.TestCase):
                          "64bit" if set(Build.SUPPORTED_ABIS) & set(["arm64-v8a", "x86_64"])
                          else "32bit")
 
+    def test_files(self):
+        chaquopy_dir = join(str(context.getFilesDir()), "chaquopy")
+        self.assertCountEqual(["AssetFinder", "bootstrap-native", "bootstrap.zip",
+                               "cacert.pem", "stdlib-common.zip", "ticket.txt"],
+                              os.listdir(chaquopy_dir))
+        self.assertCountEqual([ABI], os.listdir(join(chaquopy_dir, "bootstrap-native")))
+        self.assertCountEqual(["java", "_csv.so", "_ctypes.so", "_datetime.so",  "_hashlib.so",
+                               "_struct.so", "binascii.so", "math.so", "mmap.so", "zlib.so"],
+                              os.listdir(join(chaquopy_dir, "bootstrap-native", ABI)))
+        self.assertCountEqual(["__init__.py", "chaquopy.so", "chaquopy_android.so"],
+                              os.listdir(join(chaquopy_dir, "bootstrap-native", ABI, "java")))
+
 
 class TestAndroidImport(unittest.TestCase):
 
     def test_init(self):
-        self.check_py("markupsafe", REQS_COMMON_ZIP, "markupsafe/__init__.py", "escape",
+        self.check_py("murmurhash", REQS_COMMON_ZIP, "murmurhash/__init__.py", "get_include",
                       is_package=True)
-        self.check_py("package1", APP_ZIP, "package1/__init__.py", "test_relative",
-                      is_package=True,
-                      source_head="# This package is used by chaquopy.test.test_android.")
+        self.check_py("android1", APP_ZIP, "android1/__init__.py", "x",
+                      source_head="# This package is used by test_android.", is_package=True)
 
     def test_py(self):
-        self.check_py("markupsafe._native", REQS_COMMON_ZIP, "markupsafe/_native.py", "escape")
-        self.check_py("package1.package11.python", APP_ZIP, "package1/package11/python.py",
-                      "x", source_head='x = "python 11"')
+        self.check_py("murmurhash.about", REQS_COMMON_ZIP, "murmurhash/about.py", "__summary__")
+        self.check_py("android1.mod1", APP_ZIP, "android1/mod1.py",
+                      "x", source_head='x = "android1.mod1"')
 
     def check_py(self, mod_name, zip_name, zip_path, existing_attr, **kwargs):
         filename = asset_path(zip_name, zip_path)
-        # In build.gradle, .pyc pre-compilation is enabled for everything except app.zip.
-        cache_filename = cache_from_source(filename) if (zip_name == APP_ZIP) else None
-        mod = self.check_module(mod_name, filename, cache_filename, **kwargs)
+        # In build.gradle, .pyc pre-compilation is disabled for app.zip, so it will generate
+        # __pycache__ directories.
+        if zip_name == APP_ZIP:
+            cache_filename = cache_from_source(filename)
+            origin = filename
+        else:
+            cache_filename = None
+            origin = filename + "c"
+        mod = self.check_module(mod_name, filename, cache_filename, origin, **kwargs)
         self.assertNotPredicate(exists, filename)
         if cache_filename is None:
             self.assertNotPredicate(exists, cache_from_source(filename))
@@ -106,7 +131,7 @@ class TestAndroidImport(unittest.TestCase):
             self.assertFalse(hasattr(mod, existing_attr))
 
             # A .pyc with mismatching header timestamp should be written again.
-            new_header = header[0:4] + b"\x00\x01\x02\x03" + header[8:]
+            new_header = header[0:8] + b"\x00\x01\x02\x03" + header[12:]
             self.assertNotEqual(new_header, header)
             self.write_pyc_header(cache_filename, new_header)
             with self.assertModifies(cache_filename):
@@ -115,7 +140,7 @@ class TestAndroidImport(unittest.TestCase):
 
     def read_pyc_header(self, filename):
         with open(filename, "rb") as pyc_file:
-            return pyc_file.read(12)
+            return pyc_file.read(16)
 
     def write_pyc_header(self, filename, header):
         with open(filename, "r+b") as pyc_file:
@@ -123,29 +148,22 @@ class TestAndroidImport(unittest.TestCase):
             pyc_file.write(header)
 
     def test_so(self):
-        reqs_zip = REQS_ABI_ZIP if multi_abi else REQS_COMMON_ZIP
-        filename = asset_path(reqs_zip, "markupsafe/_speedups.so")
-        mod = self.check_module("markupsafe._speedups", filename, filename)
+        filename = asset_path(REQS_ABI_ZIP, "murmurhash/mrmr.so")
+        mod = self.check_module("murmurhash.mrmr", filename, filename, filename)
         self.check_extract_if_changed(mod, filename)
 
     def test_data(self):
         # App ZIP
-        # .py files should never be extracted.
-        self.check_data(APP_ZIP, "chaquopy", "test/test_android.py",
-                        '"""This file tests internal details of AndroidPlatform.',
-                        extract=False)
-        # .so files should only be extracted when imported (see test_so).
-        self.check_data(APP_ZIP, "chaquopy", "test/resources/b.so", "bravo", extract=False)
-        # Other files should always be extracted.
-        self.check_data(APP_ZIP, "chaquopy", "test/resources/a.txt", "alpha", extract=True)
+        pkg = "android1"
+        self.check_data(APP_ZIP, pkg, "__init__.py", b"# This package is")
+        self.check_data(APP_ZIP, pkg, "b.so", b"bravo")
+        self.check_data(APP_ZIP, pkg, "a.txt", b"alpha")
+        self.check_data(APP_ZIP, pkg, "subdir/c.txt", b"charlie")
 
         # Requirements ZIP
-        self.check_data(REQS_COMMON_ZIP, "markupsafe", "_constants.pyc", MAGIC_NUMBER,
-                        extract=False)
-        self.check_data(REQS_ABI_ZIP, "markupsafe", "_speedups.so", b"\x7fELF", extract=False)
-        self.check_data(REQS_COMMON_ZIP, "certifi", "cacert.pem",
-                        "\n# Issuer: CN=GlobalSign Root CA O=GlobalSign nv-sa OU=Root CA",
-                        extract=True)
+        self.check_data(REQS_COMMON_ZIP, "murmurhash", "about.pyc", MAGIC_NUMBER)
+        self.check_data(REQS_ABI_ZIP, "murmurhash", "mrmr.so", b"\x7fELF")
+        self.check_data(REQS_COMMON_ZIP, "murmurhash", "mrmr.pxd", b"from libc.stdint")
 
         import murmurhash.about
         loader = murmurhash.about.__loader__
@@ -157,7 +175,7 @@ class TestAndroidImport(unittest.TestCase):
         with self.assertRaisesRegexp(FileNotFoundError, "invalid.py"):
             loader.get_data(asset_path(zip_name, "invalid.py"))
 
-    def check_data(self, zip_name, package, filename, start, *, extract):
+    def check_data(self, zip_name, package, filename, start):
         # Extraction is triggered only when a top-level package is imported.
         self.assertNotIn(".", package)
 
@@ -167,16 +185,15 @@ class TestAndroidImport(unittest.TestCase):
 
         mod = import_module(package)
         data = pkgutil.get_data(package, filename)
-        if isinstance(start, str):
-            start = start.encode("UTF-8")
         self.assertTrue(data.startswith(start))
 
-        if extract:
+        if splitext(filename)[1] in [".py", ".pyc", ".so"]:
+            # Importable files are not extracted.
+            self.assertNotPredicate(exists, cache_filename)
+        else:
             self.check_extract_if_changed(mod, cache_filename)
             with open(cache_filename, "rb") as cache_file:
                 self.assertEqual(data, cache_file.read())
-        else:
-            self.assertNotPredicate(exists, cache_filename)
 
     def check_extract_if_changed(self, mod, cache_filename):
         # A missing file should be extracted.
@@ -209,18 +226,21 @@ class TestAndroidImport(unittest.TestCase):
 
     def clean_reload(self, mod):
         sys.modules.pop(mod.__name__, None)
+        submod_names = [name for name in sys.modules if name.startswith(mod.__name__ + ".")]
+        for name in submod_names:
+            sys.modules.pop(name)
+
         new_mod = import_module(mod.__name__)
         self.assertIsNot(new_mod, mod)
         return new_mod
 
-    def check_module(self, mod_name, filename, cache_filename, *, is_package=False,
+    def check_module(self, mod_name, filename, cache_filename, origin, *, is_package=False,
                      source_head=None):
+        if cache_filename and exists(cache_filename):
+            os.remove(cache_filename)
         mod = import_module(mod_name)
+        mod = self.clean_reload(mod)
         if cache_filename:
-            # A missing cache file should be created.
-            if exists(cache_filename):
-                os.remove(cache_filename)
-            mod = self.clean_reload(mod)
             self.assertPredicate(exists, cache_filename)
 
         # Module attributes
@@ -235,6 +255,10 @@ class TestAndroidImport(unittest.TestCase):
             self.assertEqual(mod_name.rpartition(".")[0], mod.__package__)
         loader = mod.__loader__
         self.assertIsInstance(loader, importer.AssetLoader)
+        spec = mod.__spec__
+        self.assertEqual(mod_name, spec.name)
+        self.assertIs(loader, spec.loader)
+        self.assertEqual(origin, spec.origin)
 
         # Loader methods (get_data is tested elsewhere)
         self.assertEqual(is_package, loader.is_package(mod_name))
@@ -271,7 +295,7 @@ class TestAndroidImport(unittest.TestCase):
                 test_frame + import_frame +
                 fr'  File "{asset_path(APP_ZIP)}/package1/syntax_error.py", line 1\n'
                 fr'    one two\n'
-                fr'          \^\n'
+                fr'        \^\n'
                 fr'SyntaxError: invalid syntax\n$')
         else:
             self.fail()
@@ -286,7 +310,7 @@ class TestAndroidImport(unittest.TestCase):
                 fr'  File "{asset_path(APP_ZIP)}/package1/recursive_import_error.py", '
                 fr'line 1, in <module>\n'
                 fr'    from os import nonexistent\n'
-                fr"ImportError: cannot import name 'nonexistent'\n$")
+                fr"ImportError: cannot import name 'nonexistent' from 'os'")
         else:
             self.fail()
 
@@ -310,20 +334,22 @@ class TestAndroidImport(unittest.TestCase):
 
         # After import complete.
         # Frames from pre-compiled requirements should have no source code.
-        class C(object):
-            __html__ = None
         try:
-            from markupsafe import _native
-            _native.escape(C)
-        except TypeError:
+            import murmurhash
+            murmurhash_file = murmurhash.__file__
+            del murmurhash.__file__
+            murmurhash.get_include()
+        except NameError:
             self.assertRegexpMatches(
                 format_exc(),
                 test_frame +
-                fr'  File "{asset_path(REQS_COMMON_ZIP)}/markupsafe/_native.py", '
-                fr'line 21, in escape\n'
-                fr"TypeError: 'NoneType' object is not callable\n$")
+                fr'  File "{asset_path(REQS_COMMON_ZIP)}/murmurhash/__init__.py", '
+                fr'line 5, in get_include\n'
+                fr"NameError: name '__file__' is not defined\n$")
         else:
             self.fail()
+        finally:
+            murmurhash.__file__ = murmurhash_file
 
         # Frames from pre-compiled stdlib should have no source code.
         try:
@@ -333,15 +359,14 @@ class TestAndroidImport(unittest.TestCase):
             self.assertRegexpMatches(
                 format_exc(),
                 test_frame +
-                r'  File "stdlib/json/__init__.py", line 354, in loads\n'
-                r'  File "stdlib/json/decoder.py", line 339, in decode\n'
-                r'  File "stdlib/json/decoder.py", line 357, in raw_decode\n'
+                r'  File "stdlib/json/__init__.py", line \d+, in loads\n'
+                r'  File "stdlib/json/decoder.py", line \d+, in decode\n'
+                r'  File "stdlib/json/decoder.py", line \d+, in raw_decode\n'
                 r'json.decoder.JSONDecodeError: Expecting value: line 1 column 1 \(char 0\)\n$')
         else:
             self.fail()
 
     def test_imp(self):
-        self.longMessage = True
         with self.assertRaisesRegexp(ImportError, "No module named 'nonexistent'"):
             imp.find_module("nonexistent")
 
@@ -353,9 +378,9 @@ class TestAndroidImport(unittest.TestCase):
                 ("argparse", imp.PY_COMPILED),                  #
                 ("select", imp.C_EXTENSION),                    #
                 ("errno", imp.C_BUILTIN),                       #
-                ("markupsafe", imp.PKG_DIRECTORY),              # requirements
-                ("markupsafe._native", imp.PY_COMPILED),        #
-                ("markupsafe._speedups", imp.C_EXTENSION),      #
+                ("murmurhash", imp.PKG_DIRECTORY),              # requirements
+                ("murmurhash.about", imp.PY_COMPILED),          #
+                ("murmurhash.mrmr", imp.C_EXTENSION),           #
                 ("chaquopy.utils", imp.PKG_DIRECTORY),          # app (already loaded)
                 ("imp_test", imp.PY_SOURCE)]:                   #     (not already loaded)
             with self.subTest(mod_name=mod_name):
@@ -400,6 +425,11 @@ class TestAndroidImport(unittest.TestCase):
     # This trick was used by Electron Cash to load modules under a different name. The Electron
     # Cash Android app no longer needs it, but there may be other software which does.
     def test_imp_rename(self):
+        # Clean start to allow test to be run more than once.
+        for name in list(sys.modules):
+            if name.startswith("imp_rename"):
+                del sys.modules[name]
+
         # Renames in stdlib are not currently supported.
         with self.assertRaisesRegexp(ImportError, "zipimporter does not support loading module "
                                      "'json' under a different name 'jason'"):
@@ -477,44 +507,124 @@ class TestAndroidImport(unittest.TestCase):
                               [(mi.name, mi.ispkg) for mi in
                                pkgutil.walk_packages(murmurhash.__path__, "murmurhash.")])
 
-    def test_pkg_resources_working_set(self):
-        import pkg_resources as pr
-        self.assertCountEqual(["MarkupSafe", "Pygments", "certifi", "chaquopy-gnustl",
-                               "murmurhash", "setuptools"],
+    def test_pr_distributions(self):
+        self.assertCountEqual(["chaquopy-libcxx", "murmurhash", "Pygments"],
                               [dist.project_name for dist in pr.working_set])
-        self.assertEqual("40.4.3", pr.get_distribution("setuptools").version)
+        self.assertEqual("0.28.0", pr.get_distribution("murmurhash").version)
 
-    def test_pkg_resources_resources(self):
-        import pkg_resources as pr
-        self.assertTrue(pr.resource_exists(__package__, "test_android.py"))
-        self.assertTrue(pr.resource_exists(__package__, "resources"))
-        self.assertFalse(pr.resource_exists(__package__, "nonexistent"))
-        self.assertTrue(pr.resource_exists(__package__, "resources/a.txt"))
-        self.assertFalse(pr.resource_exists(__package__, "resources/nonexistent.txt"))
-
-        self.assertFalse(pr.resource_isdir(__package__, "test_android.py"))
-        self.assertTrue(pr.resource_isdir(__package__, "resources"))
-        self.assertFalse(pr.resource_isdir(__package__, "nonexistent"))
-
-        self.assertCountEqual(["a.txt", "b.so", "subdir"],
-                              pr.resource_listdir(__package__, "resources"))
-        self.assertEqual(b"alpha\n", pr.resource_string(__package__, "resources/a.txt"))
-        self.assertEqual(b"bravo\n", pr.resource_string(__package__, "resources/b.so"))
-        self.assertCountEqual(["c.txt"], pr.resource_listdir(__package__, "resources/subdir"))
-        self.assertEqual(b"charlie\n", pr.resource_string(__package__, "resources/subdir/c.txt"))
-
+    def test_pr_resources(self):
         # App ZIP
-        a_filename = pr.resource_filename(__package__, "resources/a.txt")
-        self.assertEqual(asset_path(APP_ZIP, "chaquopy/test/resources/a.txt"), a_filename)
-        with open(a_filename) as a_file:
-            self.assertEqual("alpha\n", a_file.read())
+        pkg = "android1"
+        names = ["subdir", "__init__.py", "a.txt", "b.so", "mod1.py"]
+        self.assertCountEqual(names, pr.resource_listdir(pkg, ""))
+        for name in names:
+            with self.subTest(name=name):
+                self.assertTrue(pr.resource_exists(pkg, name))
+                self.assertEqual(pr.resource_isdir(pkg, name),
+                                 name == "subdir")
+        self.assertFalse(pr.resource_exists(pkg, "nonexistent"))
+        self.assertFalse(pr.resource_isdir(pkg, "nonexistent"))
+
+        self.assertCountEqual(["c.txt"], pr.resource_listdir(pkg, "subdir"))
+        self.assertTrue(pr.resource_exists(pkg, "subdir/c.txt"))
+        self.assertFalse(pr.resource_isdir(pkg, "subdir/c.txt"))
+        self.assertFalse(pr.resource_exists(pkg, "subdir/nonexistent.txt"))
+
+        self.check_pr_resource(APP_ZIP, pkg, "__init__.py", b"# This package is")
+        self.check_pr_resource(APP_ZIP, pkg, "a.txt", b"alpha\n")
+        self.check_pr_resource(APP_ZIP, pkg, "b.so", b"bravo\n")
+        self.check_pr_resource(APP_ZIP, pkg, "subdir/c.txt", b"charlie\n")
 
         # Requirements ZIP
-        cacert_filename = pr.resource_filename("certifi", "cacert.pem")
-        self.assertEqual(asset_path(REQS_COMMON_ZIP, "certifi/cacert.pem"), cacert_filename)
-        with open(cacert_filename) as cacert_file:
-            self.assertTrue(cacert_file.read().startswith(
-                "\n# Issuer: CN=GlobalSign Root CA O=GlobalSign nv-sa OU=Root CA"))
+        self.reset_package("murmurhash")
+        self.assertCountEqual(["include", "tests", "__init__.pxd", "__init__.pyc", "about.pyc",
+                               "mrmr.pxd", "mrmr.pyx", "mrmr.so"],
+                              pr.resource_listdir("murmurhash", ""))
+        self.assertCountEqual(["MurmurHash2.h", "MurmurHash3.h"],
+                              pr.resource_listdir("murmurhash", "include/murmurhash"))
+
+        self.check_pr_resource(REQS_COMMON_ZIP, "murmurhash", "__init__.pyc", MAGIC_NUMBER)
+        self.check_pr_resource(REQS_COMMON_ZIP, "murmurhash", "mrmr.pxd", b"from libc.stdint")
+        self.check_pr_resource(REQS_ABI_ZIP, "murmurhash", "mrmr.so", b"\x7fELF")
+
+    def check_pr_resource(self, zip_name, package, filename, start):
+        with self.subTest(package=package, filename=filename):
+            data = pr.resource_string(package, filename)
+            self.assertPredicate(data.startswith, start)
+
+            abs_filename = pr.resource_filename(package, filename)
+            self.assertEqual(asset_path(zip_name, package.replace(".", "/"), filename),
+                             abs_filename)
+            if splitext(filename)[1] in [".py", ".pyc", ".so"]:
+                # Importable files are not extracted.
+                self.assertNotPredicate(exists, abs_filename)
+            else:
+                with open(abs_filename, "rb") as f:
+                    self.assertEqual(data, f.read())
+
+    def reset_package(self, package_name):
+        package = import_module(package_name)
+        for entry in package.__path__:
+            rmtree(entry)
+        self.clean_reload(package)
+
+    # Unlike pkg_resources, importlib.resources cannot access subdirectories within packages.
+    def test_importlib_resources(self):
+        # App ZIP
+        pkg = "android1"
+        names = ["subdir", "__init__.py", "a.txt", "b.so", "mod1.py"]
+        self.assertCountEqual(names, resources.contents(pkg))
+        for name in names:
+            with self.subTest(name=name):
+                self.assertEqual(resources.is_resource(pkg, name),
+                                 name != "subdir")
+
+        self.check_ir_resource(APP_ZIP, pkg, "__init__.py", b"# This package is")
+        self.check_ir_resource(APP_ZIP, pkg, "a.txt", b"alpha\n")
+        self.check_ir_resource(APP_ZIP, pkg, "b.so", b"bravo\n")
+
+        self.assertFalse(resources.is_resource(pkg, "invalid.py"))
+        with self.assertRaisesRegex(FileNotFoundError, "invalid.py"):
+            resources.read_binary(pkg, "invalid.py")
+        with self.assertRaisesRegex(FileNotFoundError, "invalid.py"):
+            with resources.path(pkg, "invalid.py"):
+                pass
+
+        # Requirements ZIP
+        self.reset_package("murmurhash")
+        self.assertCountEqual(["include", "tests", "__init__.pxd", "__init__.pyc", "about.pyc",
+                               "mrmr.pxd", "mrmr.pyx", "mrmr.so"],
+                              resources.contents("murmurhash"))
+
+        self.check_ir_resource(REQS_COMMON_ZIP, "murmurhash", "__init__.pyc", MAGIC_NUMBER)
+        self.check_ir_resource(REQS_COMMON_ZIP, "murmurhash", "mrmr.pxd", b"from libc.stdint")
+        self.check_ir_resource(REQS_ABI_ZIP, "murmurhash", "mrmr.so", b"\x7fELF")
+
+    def check_ir_resource(self, zip_name, package, filename, start):
+        with self.subTest(package=package, filename=filename):
+            data = resources.read_binary(package, filename)
+            self.assertPredicate(data.startswith, start)
+
+            with resources.path(package, filename) as abs_path:
+                if splitext(filename)[1] in [".py", ".pyc", ".so"]:
+                    # Importable files are not extracted.
+                    self.assertEqual(join(str(context.getCacheDir()), "chaquopy/tmp"),
+                                     dirname(abs_path))
+                else:
+                    self.assertEqual(asset_path(zip_name, package.replace(".", "/"), filename),
+                                     str(abs_path))
+                with open(abs_path, "rb") as f:
+                    self.assertEqual(data, f.read())
+
+    def test_importlib_metadata(self):
+        self.assertCountEqual(["chaquopy-libcxx", "murmurhash", "Pygments"],
+                              [d.metadata["Name"] for d in metadata.distributions()])
+
+        dist = metadata.distribution("murmurhash")
+        self.assertEqual("0.28.0", dist.version)
+        self.assertIsNone(dist.files)
+        self.assertEqual("Matthew Honnibal", dist.metadata["Author"])
+        self.assertEqual(["chaquopy-libcxx (>=7000)"], dist.requires)
 
     def assertModifies(self, filename):
         return self.check_modifies(self.assertNotEqual, filename)
@@ -559,11 +669,36 @@ class TestAndroidStdlib(unittest.TestCase):
         import ctypes
         from ctypes.util import find_library
 
-        self.assertEqual("libc.so", find_library("c"))
-        self.assertEqual("liblog.so", find_library("log"))
+        libc = ctypes.CDLL(find_library("c"))
+        liblog = ctypes.CDLL(find_library("log"))
         self.assertIsNone(find_library("nonexistent"))
 
-        self.assertTrue(ctypes.pythonapi.PyLong_FromString)
+        # Work around double-underscore mangling of __android_log_write.
+        def assertHasSymbol(dll, name):
+            self.assertIsNotNone(getattr(dll, name))
+        def assertNotHasSymbol(dll, name):
+            with self.assertRaises(AttributeError):
+                getattr(dll, name)
+
+        assertHasSymbol(libc, "printf")
+        assertHasSymbol(liblog, "__android_log_write")
+        assertNotHasSymbol(libc, "__android_log_write")
+
+        # Global search (https://bugs.python.org/issue34592): only works on newer API levels.
+        if API_LEVEL >= 21:
+            main = ctypes.CDLL(None)
+            assertHasSymbol(main, "printf")
+            assertHasSymbol(main, "__android_log_write")
+            assertNotHasSymbol(main, "nonexistent")
+
+        assertHasSymbol(ctypes.pythonapi, "PyObject_Str")
+
+    def test_datetime(self):
+        import datetime
+        # This is the interface to the native _datetime module, which is required by NumPy. The
+        # attribute will only exist if _datetime was available when datetime was first
+        # imported.
+        self.assertTrue(hasattr(datetime, "datetime_CAPI"))
 
     def test_lib2to3(self):
         # Requires grammar files to be available in stdlib zip.
@@ -640,18 +775,21 @@ class TestAndroidStdlib(unittest.TestCase):
         self.assertRegexpMatches(resp.info()["Content-type"], r"^text/html")
 
     def test_sys(self):
-        self.assertEqual("m", sys.abiflags)
+        self.assertEqual(ABI_FLAGS, sys.abiflags)
         self.assertEqual([""], sys.argv)
         self.assertTrue(exists(sys.executable), sys.executable)
+        self.assertEqual("siphash24", sys.hash_info.algorithm)
         for p in sys.path:
             self.assertIsInstance(p, str)
             self.assertTrue(exists(p), p)
-        self.assertRegexpMatches(sys.platform, r"^linux")
+        self.assertRegex(sys.platform, r"^linux")
+        self.assertRegex(sys.version,  # Make sure we don't have any "-dirty" caption.
+                         r"^{}.{}.{} \(default, ".format(*sys.version_info[:3]))
 
     def test_sysconfig(self):
         import distutils.sysconfig
         import sysconfig
-        ldlibrary = "libpython{}.{}m.so".format(*sys.version_info[:2])
+        ldlibrary = "libpython{}.{}{}.so".format(*sys.version_info[:2], ABI_FLAGS)
         self.assertEqual(ldlibrary, sysconfig.get_config_vars()["LDLIBRARY"])
         self.assertEqual(ldlibrary, distutils.sysconfig.get_config_vars()["LDLIBRARY"])
 
@@ -661,6 +799,12 @@ class TestAndroidStdlib(unittest.TestCase):
         self.assertEqual(expected_dir, tempfile.gettempdir())
         with tempfile.NamedTemporaryFile() as f:
             self.assertEqual(expected_dir, dirname(f.name))
+
+    def test_time(self):
+        import time
+        t = time.gmtime(1582917965)
+        self.assertEqual("Fri, 28 Feb 2020 19:26:05",
+                         time.strftime("%a, %d %b %Y %H:%M:%S", t))
 
 
 class TestAndroidStreams(unittest.TestCase):

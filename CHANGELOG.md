@@ -3,6 +3,11 @@
 This file only records changes to the demo app. For changes to the Chaquopy SDK itself, see
 [its own change log](https://chaquo.com/chaquopy/doc/current/changelog.html).
 
+## 7.0.2 (2020-03-05)
+
+* Target Android Studio 3.6.1.
+* Fix keys repeating endlessly if pressed during a rotation.
+
 ## 6.3.0 (2019-08-25)
 
 * Target Android Studio 3.5.0.

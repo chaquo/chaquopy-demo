@@ -1,9 +1,8 @@
 # Chaquopy demo
 
 This is the demo app for [Chaquopy](https://chaquo.com/chaquopy/), the Python SDK for Android.
-You can install a [Python
-2](https://play.google.com/store/apps/details?id=com.chaquo.python.demo) or [Python
-3](https://play.google.com/store/apps/details?id=com.chaquo.python.demo3) build of this app
+You can get a [pre-built
+copy](https://play.google.com/store/apps/details?id=com.chaquo.python.demo3) of this app
 from Google Play.
 
 The app includes:
