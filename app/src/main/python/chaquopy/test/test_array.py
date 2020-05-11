@@ -1,8 +1,6 @@
-from __future__ import absolute_import, division, print_function
-
 import ctypes
-import sys
-from java import cast, jarray, jboolean, jbyte, jchar, jclass, jint
+from java import cast, jarray, jboolean, jbyte, jchar, jclass, jfloat, jint, jlong, jshort
+from java.lang import String
 
 from .test_utils import FilterWarningsCase
 
@@ -12,8 +10,7 @@ class TestArray(FilterWarningsCase):
     def test_basic(self):
         array_C = jarray(jchar)("hello")
         self.assertEqual(5, len(array_C))
-        self.assertEqual(repr(array_C).replace("u'", "'"),
-                         "jarray('C')(['h', 'e', 'l', 'l', 'o'])")
+        self.assertEqual(repr(array_C), "jarray('C')(['h', 'e', 'l', 'l', 'o'])")
 
         self.assertTrue(isinstance(array_C, jclass("java.lang.Object")))
         self.assertTrue(isinstance(array_C, jclass("java.lang.Cloneable")))
@@ -28,7 +25,7 @@ class TestArray(FilterWarningsCase):
 
         array_C = jarray(jchar)(3)
         self.assertEqual(3, len(array_C))
-        self.assertEqual([u"\u0000", u"\u0000", u"\u0000"], array_C)
+        self.assertEqual(["\u0000", "\u0000", "\u0000"], array_C)
 
         array_I = jarray(jint)(2)
         self.assertEqual(2, len(array_I))
@@ -100,8 +97,7 @@ class TestArray(FilterWarningsCase):
             cast(jarray(Object), Z_array)
 
     def test_output_arg(self):
-        String = jclass('java.lang.String')
-        string = String(u'\u1156\u2278\u3390\u44AB')
+        string = String('\u1156\u2278\u3390\u44AB')
         for btarray in ([0] * 4,
                         (0,) * 4,
                         jarray(jbyte)([0] * 4)):
@@ -159,40 +155,37 @@ class TestArray(FilterWarningsCase):
                              func(jarray(jarray(jboolean))([[True], [False, True]])))
 
     def test_bytes(self):
+        # Java byte arrays work for values -128 to 127.
         self.verify_bytes([], b"")
-        self.verify_bytes([-128, -127, -2, -1, 0, 1, 2, 126, 127],
-                          b"\x80\x81\xFE\xFF\x00\x01\x02\x7E\x7F")
+        self.verify_bytes([-128, -127, -2, -1, 0, 1, 126, 127],
+                          b"\x80\x81\xFE\xFF\x00\x01\x7E\x7F")
 
-        # These optional arguments are not part of the public API and are subject to change.
-        array_B = jarray(jbyte)([0, 102, 111, 111, 127, -1, -128])
-        self.assertEqual(b"\x00foo\x7F\xFF\x80", array_B.__bytes__())
-        self.assertEqual(b"foo", array_B.__bytes__(1, 3))
-        self.assertEqual(b"\xFF\x80", array_B.__bytes__(5))
-        self.assertEqual(b"\x00foo", array_B.__bytes__(length=4))
+        # Other Java array types cannot be directly converted to bytes.
+        for element_type, value in [(jint, 42), (jfloat, 3.0), (jchar, "x"), (String, "hello")]:
+            a = jarray(element_type)([value])
+            for cls in [bytes, bytearray]:
+                with self.assertRaisesRegexp(TypeError, "__getbuffer__ is not implemented"):
+                    cls(a)
+
+        # But integer array types can be converted indirectly for values 0 to 255.
+        for element_type in [jshort, jint, jlong]:
+            self.assertEqual(
+                b"\x00\x01\x7E\x7F\x80\x81\xFE\xFF",
+                bytes(list(jarray(element_type)([0, 1, 126, 127, 128, 129, 254, 255]))))
 
     def verify_bytes(self, jbyte_values, b):
         arrayB_from_list = jarray(jbyte)(jbyte_values)
         self.assertEqual(jbyte_values, arrayB_from_list)
 
-        to_bytes = (bytes if sys.version_info[0] >= 3
-                    else lambda x: x.__bytes__())
-        array_bytes = to_bytes(arrayB_from_list)
-        self.assertIsInstance(array_bytes, bytes)
+        array_bytes = bytes(arrayB_from_list)
         self.assertEqual(b, array_bytes)
-        # TODO #5231: use `bytearray(bytes(...))` instead.
-        # array_bytearray = bytearray(arrayB_from_list)
-        # self.assertEqual(b, array_bytearray)
+        array_bytearray = bytearray(arrayB_from_list)
+        self.assertEqual(b, array_bytearray)
 
         arrayB_from_bytes = jarray(jbyte)(b)
         self.assertEqual(jbyte_values, arrayB_from_bytes)
         arrayB_from_bytearray = jarray(jbyte)(bytearray(b))
         self.assertEqual(jbyte_values, arrayB_from_bytearray)
-
-        b_as_ints = b if (sys.version_info[0] >= 3) else map(ord, b)
-        arrayI_from_bytes = jarray(jint)(b_as_ints)
-        self.assertEqual(b_as_ints, arrayI_from_bytes)
-        with self.assertRaisesRegexp(TypeError, "Cannot call __bytes__ on int[], only on byte[]"):
-            to_bytes(arrayI_from_bytes)
 
     def test_eq(self):
         tf = jarray(jboolean)([True, False])
@@ -234,13 +227,14 @@ class TestArray(FilterWarningsCase):
         self.assertEqual(tf, tf + [])
         self.assertEqual(tf, [] + tf)
         self.assertEqual(tf, tf + jarray(jboolean)([]))
+        self.assertEqual([True, False, True, False], tf + tf)
         self.assertEqual([True, False, True], tf + [True])
+        self.assertEqual([True, True, False], [True] + tf)
         with self.assertRaises(TypeError):
             tf + True
         with self.assertRaises(TypeError):
             tf + None
 
-        String = jclass("java.lang.String")
         hw = jarray(String)(["hello", "world"])
         self.assertEqual([True, False, "hello", "world"], tf + hw)
 

@@ -2,8 +2,6 @@
 and should not be accessed or relied upon by user code.
 """
 
-from __future__ import absolute_import, division, print_function
-
 from contextlib import contextmanager
 import imp
 from importlib import import_module, metadata, reload, resources
@@ -20,8 +18,6 @@ import sys
 from traceback import format_exc
 import types
 import unittest
-
-import pkg_resources as pr
 
 
 # Flags from PEP 3149.
@@ -94,13 +90,8 @@ class TestAndroidImport(unittest.TestCase):
         filename = asset_path(zip_name, zip_path)
         # In build.gradle, .pyc pre-compilation is disabled for app.zip, so it will generate
         # __pycache__ directories.
-        if zip_name == APP_ZIP:
-            cache_filename = cache_from_source(filename)
-            origin = filename
-        else:
-            cache_filename = None
-            origin = filename + "c"
-        mod = self.check_module(mod_name, filename, cache_filename, origin, **kwargs)
+        cache_filename = cache_from_source(filename) if zip_name == APP_ZIP else None
+        mod = self.check_module(mod_name, filename, cache_filename, **kwargs)
         self.assertNotPredicate(exists, filename)
         if cache_filename is None:
             self.assertNotPredicate(exists, cache_from_source(filename))
@@ -149,7 +140,7 @@ class TestAndroidImport(unittest.TestCase):
 
     def test_so(self):
         filename = asset_path(REQS_ABI_ZIP, "murmurhash/mrmr.so")
-        mod = self.check_module("murmurhash.mrmr", filename, filename, filename)
+        mod = self.check_module("murmurhash.mrmr", filename, filename)
         self.check_extract_if_changed(mod, filename)
 
     def test_data(self):
@@ -234,7 +225,7 @@ class TestAndroidImport(unittest.TestCase):
         self.assertIsNot(new_mod, mod)
         return new_mod
 
-    def check_module(self, mod_name, filename, cache_filename, origin, *, is_package=False,
+    def check_module(self, mod_name, filename, cache_filename, *, is_package=False,
                      source_head=None):
         if cache_filename and exists(cache_filename):
             os.remove(cache_filename)
@@ -258,7 +249,6 @@ class TestAndroidImport(unittest.TestCase):
         spec = mod.__spec__
         self.assertEqual(mod_name, spec.name)
         self.assertIs(loader, spec.loader)
-        self.assertEqual(origin, spec.origin)
 
         # Loader methods (get_data is tested elsewhere)
         self.assertEqual(is_package, loader.is_package(mod_name))
@@ -431,8 +421,8 @@ class TestAndroidImport(unittest.TestCase):
                 del sys.modules[name]
 
         # Renames in stdlib are not currently supported.
-        with self.assertRaisesRegexp(ImportError, "zipimporter does not support loading module "
-                                     "'json' under a different name 'jason'"):
+        with self.assertRaisesRegexp(ImportError, "ChaquopyZipImporter does not support "
+                                     "loading module 'json' under a different name 'jason'"):
             imp.load_module("jason", *imp.find_module("json"))
 
         def check_top_level(real_name, load_name, id):
@@ -474,9 +464,9 @@ class TestAndroidImport(unittest.TestCase):
         self.assertIs(sys.modules["imp_rename_2.mod_3"], mod_3)
 
         # The standard load_module implementation doesn't add a sub-module as an attribute of
-        # its package. (Despite this, in Python 3 only, it can still be imported under its new
-        # name using `from ... import`. This seems to contradict the documentation of
-        # __import__, but it's not important enough to investigate just now.)
+        # its package. Despite this, it can still be imported under its new name using `from
+        # ... import`. This seems to contradict the documentation of __import__, but it's not
+        # important enough to investigate just now.
         self.assertFalse(hasattr(imp_rename_2, "mod_3"))
 
     # See src/test/python/test.pth.
@@ -508,11 +498,14 @@ class TestAndroidImport(unittest.TestCase):
                                pkgutil.walk_packages(murmurhash.__path__, "murmurhash.")])
 
     def test_pr_distributions(self):
+        import pkg_resources as pr
         self.assertCountEqual(["chaquopy-libcxx", "murmurhash", "Pygments"],
                               [dist.project_name for dist in pr.working_set])
         self.assertEqual("0.28.0", pr.get_distribution("murmurhash").version)
 
     def test_pr_resources(self):
+        import pkg_resources as pr
+
         # App ZIP
         pkg = "android1"
         names = ["subdir", "__init__.py", "a.txt", "b.so", "mod1.py"]
@@ -548,6 +541,7 @@ class TestAndroidImport(unittest.TestCase):
         self.check_pr_resource(REQS_ABI_ZIP, "murmurhash", "mrmr.so", b"\x7fELF")
 
     def check_pr_resource(self, zip_name, package, filename, start):
+        import pkg_resources as pr
         with self.subTest(package=package, filename=filename):
             data = pr.resource_string(package, filename)
             self.assertPredicate(data.startswith, start)
@@ -622,6 +616,7 @@ class TestAndroidImport(unittest.TestCase):
 
         dist = metadata.distribution("murmurhash")
         self.assertEqual("0.28.0", dist.version)
+        self.assertEqual(dist.version, dist.metadata["Version"])
         self.assertIsNone(dist.files)
         self.assertEqual("Matthew Honnibal", dist.metadata["Author"])
         self.assertEqual(["chaquopy-libcxx (>=7000)"], dist.requires)
@@ -661,6 +656,43 @@ def asset_path(zip_name, *paths):
                 "chaquopy/AssetFinder",
                 os.path.splitext(zip_name)[0].partition("-")[0],
                 *paths)
+
+
+# On Android, getDeclaredMethods and getDeclaredFields fail when the member's type refers to a
+# class that cannot be loaded. Test the partial workaround in Reflector.
+class TestAndroidReflect(unittest.TestCase):
+
+    MEMBERS = ["tcFieldPublic", "tcFieldProtected", "tcMethodPublic", "tcMethodProtected",
+               "iFieldPublic", "iFieldProtected", "iMethodPublic", "iMethodProtected",
+               "finalize"]
+
+    def test_android_reflect(self):
+        from com.chaquo.python.demo import TestAndroidReflect as TAR
+
+        if API_LEVEL >= 26:
+            # TextClassifier is in the platform, so all members should be visible.
+            self.assertMembers(TAR, self.MEMBERS)
+        elif API_LEVEL >= 21:
+            # Overridden methods should be visible, plus public methods that don't involve
+            # TextClassifier.
+            self.assertMembers(TAR, ["iMethodPublic", "finalize"])
+        else:
+            # Only overridden methods should be visible.
+            self.assertMembers(TAR, ["finalize"])
+
+    def assertMembers(self, cls, names):
+        for name in names:
+            with self.subTest(name=name):
+                self.assertTrue(self.declares_member(cls, name))
+
+        for name in self.MEMBERS:
+            if name not in names:
+                with self.subTest(name=name):
+                    self.assertFalse(self.declares_member(cls, name))
+
+    def declares_member(self, cls, name):
+        hasattr(cls, name)  # Adds member to __dict__ if it exists.
+        return name in cls.__dict__
 
 
 class TestAndroidStdlib(unittest.TestCase):
@@ -742,6 +774,23 @@ class TestAndroidStdlib(unittest.TestCase):
         self.assertEqual("utf-8", sys.getdefaultencoding())
         self.assertEqual("utf-8", sys.getfilesystemencoding())
 
+    def test_multiprocessing(self):
+        from multiprocessing.dummy import Pool
+        import random
+        import time
+
+        def square_slowly(x):
+            time.sleep(random.uniform(0.1, 0.2))
+            return x ** 2
+
+        pool = Pool(8)
+        start = time.time()
+        self.assertEqual([0, 1, 4, 9, 16, 25, 36, 49],
+                         pool.map(square_slowly, range(8), chunksize=1))
+        duration = time.time() - start
+        self.assertGreater(duration, 0.1)
+        self.assertLess(duration, 0.25)
+
     def test_os(self):
         self.assertEqual("posix", os.name)
         self.assertEqual(str(context.getFilesDir()), os.path.expanduser("~"))
@@ -779,9 +828,16 @@ class TestAndroidStdlib(unittest.TestCase):
         self.assertEqual([""], sys.argv)
         self.assertTrue(exists(sys.executable), sys.executable)
         self.assertEqual("siphash24", sys.hash_info.algorithm)
+
+        chaquopy_dir = f"{context.getFilesDir()}/chaquopy"
+        self.assertEqual([join(chaquopy_dir, path) for path in
+                          ["AssetFinder/app", "AssetFinder/requirements",
+                           f"AssetFinder/stdlib-{ABI}", "stdlib-common.zip",
+                           "bootstrap.zip", f"bootstrap-native/{ABI}"]],
+                         sys.path)
         for p in sys.path:
-            self.assertIsInstance(p, str)
             self.assertTrue(exists(p), p)
+
         self.assertRegex(sys.platform, r"^linux")
         self.assertRegex(sys.version,  # Make sure we don't have any "-dirty" caption.
                          r"^{}.{}.{} \(default, ".format(*sys.version_info[:3]))

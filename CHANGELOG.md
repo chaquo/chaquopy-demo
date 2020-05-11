@@ -3,15 +3,22 @@
 This file only records changes to the demo app. For changes to the Chaquopy SDK itself, see
 [its own change log](https://chaquo.com/chaquopy/doc/current/changelog.html).
 
+## 7.0.3 (2020-05-11)
+
+* Increase target API level to 29.
+* Migrate to AndroidX.
+* Remove remaining Python 2 compatibility code.
+* Target Android Studio 3.6.3.
+
 ## 7.0.2 (2020-03-05)
 
-* Target Android Studio 3.6.1.
 * Fix keys repeating endlessly if pressed during a rotation.
+* Target Android Studio 3.6.1.
 
 ## 6.3.0 (2019-08-25)
 
-* Target Android Studio 3.5.0.
 * Prevent crash by limiting the console scrollback size.
+* Target Android Studio 3.5.0.
 
 ## 6.2.1 (2019-04-19)
 
@@ -19,13 +26,13 @@ This file only records changes to the demo app. For changes to the Chaquopy SDK 
 
 ## 6.0.0 (2019-03-09)
 
-* Target Android Studio 3.3.2.
 * Add ABI `x86_64`.
+* Target Android Studio 3.3.2.
 
 ## 5.1.2 (2019-01-19)
 
-* Target Android Studio 3.2.1.
 * Increase target API level to 28.
+* Target Android Studio 3.2.1.
 
 ## 5.0.0 (2018-11-05)
 
@@ -35,8 +42,8 @@ This file only records changes to the demo app. For changes to the Chaquopy SDK 
 
 ## 4.0.0 (2018-08-22)
 
-* Target Android Studio 3.1.4.
 * Correct caption mistake.
+* Target Android Studio 3.1.4.
 
 ## 3.3.2 (2018-08-01)
 
@@ -57,7 +64,8 @@ This file only records changes to the demo app. For changes to the Chaquopy SDK 
 
 ## 3.0.0 (2018-05-15)
 
-* Target Android Studio 3.1, and update to Python 2.7.15 and 3.6.5.
+* Update to Python 2.7.15 and 3.6.5.
+* Target Android Studio 3.1.0.
 
 ## 2.1.0 (2018-04-26)
 
