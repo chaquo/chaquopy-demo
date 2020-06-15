@@ -3,6 +3,7 @@ and should not be accessed or relied upon by user code.
 """
 
 from contextlib import contextmanager
+import ctypes
 import imp
 from importlib import import_module, metadata, reload, resources
 from importlib.util import cache_from_source, MAGIC_NUMBER
@@ -11,6 +12,7 @@ import os
 from os.path import dirname, exists, join, splitext
 import pkgutil
 import platform
+import re
 import shlex
 from shutil import rmtree
 from subprocess import check_output
@@ -34,12 +36,12 @@ else:
     context = __loader__.finder.context  # noqa: F821
 
     from com.chaquo.python.android import AndroidPlatform
-    APP_ZIP = "app.zip"
-    REQS_COMMON_ZIP = "requirements-common.zip"
+    APP_ZIP = "app"
+    REQS_COMMON_ZIP = "requirements-common"
     multi_abi = len([name for name in context.getAssets().list("chaquopy")
                      if name.startswith("requirements")]) > 2
     ABI = AndroidPlatform.ABI
-    REQS_ABI_ZIP = ("requirements-{}.zip".format(ABI) if multi_abi else REQS_COMMON_ZIP)
+    REQS_ABI_ZIP = f"requirements-{ABI}" if multi_abi else REQS_COMMON_ZIP
 
 def setUpModule():
     if API_LEVEL is None:
@@ -62,8 +64,8 @@ class TestAndroidPlatform(unittest.TestCase):
 
     def test_files(self):
         chaquopy_dir = join(str(context.getFilesDir()), "chaquopy")
-        self.assertCountEqual(["AssetFinder", "bootstrap-native", "bootstrap.zip",
-                               "cacert.pem", "stdlib-common.zip", "ticket.txt"],
+        self.assertCountEqual(["AssetFinder", "bootstrap-native", "bootstrap.imy",
+                               "cacert.pem", "stdlib-common.imy", "ticket.txt"],
                               os.listdir(chaquopy_dir))
         self.assertCountEqual([ABI], os.listdir(join(chaquopy_dir, "bootstrap-native")))
         self.assertCountEqual(["java", "_csv.so", "_ctypes.so", "_datetime.so",  "_hashlib.so",
@@ -88,8 +90,7 @@ class TestAndroidImport(unittest.TestCase):
 
     def check_py(self, mod_name, zip_name, zip_path, existing_attr, **kwargs):
         filename = asset_path(zip_name, zip_path)
-        # In build.gradle, .pyc pre-compilation is disabled for app.zip, so it will generate
-        # __pycache__ directories.
+        # build.gradle has pyc { src false }, so APP_ZIP will generate __pycache__ directories.
         cache_filename = cache_from_source(filename) if zip_name == APP_ZIP else None
         mod = self.check_module(mod_name, filename, cache_filename, **kwargs)
         self.assertNotPredicate(exists, filename)
@@ -143,7 +144,23 @@ class TestAndroidImport(unittest.TestCase):
         mod = self.check_module("murmurhash.mrmr", filename, filename)
         self.check_extract_if_changed(mod, filename)
 
-    def test_data(self):
+    def test_non_package_data(self):
+        for dir_name, dir_description in [("", "root"), ("non_package_data", "directory"),
+                                          ("non_package_data/subdir", "subdirectory")]:
+            with self.subTest(dir_name=dir_name):
+                extracted_dir = asset_path(APP_ZIP, dir_name)
+                self.assertCountEqual(
+                    ["non_package_data.txt"] + (["test.pth"] if not dir_name else []),
+                    [entry.name for entry in os.scandir(extracted_dir) if entry.is_file()])
+                with open(join(extracted_dir, "non_package_data.txt")) as f:
+                    self.assertPredicate(str.startswith, f.read(),
+                                         f"# Text file in {dir_description}")
+
+        # Package directories shouldn't be extracted on startup, but on first import. This
+        # package is never imported, so it should never be extracted at all.
+        self.assertNotPredicate(exists, asset_path(APP_ZIP, "never_imported"))
+
+    def test_package_data(self):
         # App ZIP
         pkg = "android1"
         self.check_data(APP_ZIP, pkg, "__init__.py", b"# This package is")
@@ -261,10 +278,8 @@ class TestAndroidImport(unittest.TestCase):
         else:
             self.assertIsNone(source)
 
-        expected_file = loader.get_filename(mod_name)
-        if expected_file.endswith(".pyc"):
-            expected_file = expected_file[:-1]
-        self.assertEqual(expected_file, mod.__file__)
+        self.assertEqual(re.sub(r"\.pyc$", ".py", loader.get_filename(mod_name)),
+                         mod.__file__)
 
         return mod
 
@@ -341,7 +356,8 @@ class TestAndroidImport(unittest.TestCase):
         finally:
             murmurhash.__file__ = murmurhash_file
 
-        # Frames from pre-compiled stdlib should have no source code.
+        # Frames from pre-compiled stdlib should have filenames starting with "stdlib/", and no
+        # source code.
         try:
             import json
             json.loads("hello")
@@ -359,6 +375,10 @@ class TestAndroidImport(unittest.TestCase):
     def test_imp(self):
         with self.assertRaisesRegexp(ImportError, "No module named 'nonexistent'"):
             imp.find_module("nonexistent")
+
+        # See comment about torchvision below.
+        from murmurhash import mrmr
+        os.remove(mrmr.__file__)
 
         # If any of the below modules already exist, they will be reloaded. This may have
         # side-effects, e.g. if we'd included sys, then sys.executable would be reset and
@@ -382,28 +402,40 @@ class TestAndroidImport(unittest.TestCase):
                     with self.subTest(prefix=prefix):
                         file, pathname, description = imp.find_module(word, path)
                         suffix, mode, actual_type = description
+
+                        if actual_type in [imp.C_BUILTIN, imp.PKG_DIRECTORY]:
+                            self.assertIsNone(file)
+                            self.assertEqual("", suffix)
+                            self.assertEqual("", mode)
+                        else:
+                            data = file.read()
+                            self.assertEqual(0, len(data))
+                            if actual_type == imp.PY_SOURCE:
+                                self.assertEqual("r", mode)
+                                self.assertIsInstance(data, str)
+                            else:
+                                self.assertEqual("rb", mode)
+                                self.assertIsInstance(data, bytes)
+                            self.assertPredicate(str.endswith, pathname, suffix)
+
+                        # See comment about torchvision in find_module_override.
+                        if actual_type == imp.C_EXTENSION:
+                            self.assertPredicate(exists, pathname)
+
                         mod = imp.load_module(prefix, file, pathname, description)
                         self.assertEqual(prefix, mod.__name__)
                         self.assertEqual(actual_type == imp.PKG_DIRECTORY,
                                          hasattr(mod, "__path__"))
-
-                        self.assertTrue(hasattr(mod, "__spec__"))
                         self.assertIsNotNone(mod.__spec__)
                         self.assertEqual(mod.__name__, mod.__spec__.name)
 
                         if actual_type == imp.C_BUILTIN:
-                            self.assertIsNone(file)
                             self.assertIsNone(pathname)
+                        elif actual_type == imp.PKG_DIRECTORY:
+                            self.assertEqual(pathname, dirname(mod.__file__))
                         else:
-                            if actual_type == imp.PKG_DIRECTORY:
-                                self.assertIsNone(file)
-                            else:
-                                # Our implementation of load_module doesn't use `file`, but
-                                # user code might, so check it adequately simulates a file.
-                                self.assertTrue(hasattr(file, "read"))
-                                self.assertTrue(hasattr(file, "close"))
-                            self.assertIsNotNone(pathname)
-                            self.assertTrue(hasattr(mod, "__file__"))
+                            self.assertEqual(re.sub(r"\.pyc$", ".py", pathname),
+                                             re.sub(r"\.pyc$", ".py", mod.__file__))
 
                         if i < len(words) - 1:
                             self.assertEqual(imp.PKG_DIRECTORY, actual_type)
@@ -468,6 +500,13 @@ class TestAndroidImport(unittest.TestCase):
         # ... import`. This seems to contradict the documentation of __import__, but it's not
         # important enough to investigate just now.
         self.assertFalse(hasattr(imp_rename_2, "mod_3"))
+
+    # For non-importer-related tests, see TestAndroidStdlib.test_ctypes.
+    def test_ctypes(self):
+        from murmurhash import mrmr
+        os.remove(mrmr.__file__)
+        ctypes.CDLL(mrmr.__file__)
+        self.assertPredicate(exists, mrmr.__file__)
 
     # See src/test/python/test.pth.
     def test_pth(self):
@@ -611,8 +650,16 @@ class TestAndroidImport(unittest.TestCase):
                     self.assertEqual(data, f.read())
 
     def test_importlib_metadata(self):
+        dists = list(metadata.distributions())
         self.assertCountEqual(["chaquopy-libcxx", "murmurhash", "Pygments"],
-                              [d.metadata["Name"] for d in metadata.distributions()])
+                              [d.metadata["Name"] for d in dists])
+        for dist in dists:
+            dist_info = str(dist._path)
+            self.assertPredicate(str.startswith, dist_info, asset_path(REQS_COMMON_ZIP))
+            self.assertPredicate(str.endswith, dist_info, ".dist-info")
+
+            # .dist-info directories shouldn't be extracted.
+            self.assertNotPredicate(exists, dist_info)
 
         dist = metadata.distribution("murmurhash")
         self.assertEqual("0.28.0", dist.version)
@@ -652,10 +699,8 @@ class TestAndroidImport(unittest.TestCase):
 
 
 def asset_path(zip_name, *paths):
-    return join(context.getFilesDir().toString(),
-                "chaquopy/AssetFinder",
-                os.path.splitext(zip_name)[0].partition("-")[0],
-                *paths)
+    return join(context.getFilesDir().toString(), "chaquopy/AssetFinder",
+                zip_name.partition("-")[0], *paths)
 
 
 # On Android, getDeclaredMethods and getDeclaredFields fail when the member's type refers to a
@@ -697,10 +742,9 @@ class TestAndroidReflect(unittest.TestCase):
 
 class TestAndroidStdlib(unittest.TestCase):
 
+    # For importer-related tests, see TestAndroidImport.test_ctypes.
     def test_ctypes(self):
-        import ctypes
         from ctypes.util import find_library
-
         libc = ctypes.CDLL(find_library("c"))
         liblog = ctypes.CDLL(find_library("log"))
         self.assertIsNone(find_library("nonexistent"))
@@ -832,8 +876,8 @@ class TestAndroidStdlib(unittest.TestCase):
         chaquopy_dir = f"{context.getFilesDir()}/chaquopy"
         self.assertEqual([join(chaquopy_dir, path) for path in
                           ["AssetFinder/app", "AssetFinder/requirements",
-                           f"AssetFinder/stdlib-{ABI}", "stdlib-common.zip",
-                           "bootstrap.zip", f"bootstrap-native/{ABI}"]],
+                           f"AssetFinder/stdlib-{ABI}", "stdlib-common.imy",
+                           "bootstrap.imy", f"bootstrap-native/{ABI}"]],
                          sys.path)
         for p in sys.path:
             self.assertTrue(exists(p), p)

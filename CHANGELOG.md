@@ -3,6 +3,10 @@
 This file only records changes to the demo app. For changes to the Chaquopy SDK itself, see
 [its own change log](https://chaquo.com/chaquopy/doc/current/changelog.html).
 
+## 8.0.0 (2020-06-15)
+
+* No changes except for the SDK update.
+
 ## 7.0.3 (2020-05-11)
 
 * Increase target API level to 29.
