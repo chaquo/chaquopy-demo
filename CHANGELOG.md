@@ -3,6 +3,12 @@
 This file only records changes to the demo app. For changes to the Chaquopy SDK itself, see
 [its own change log](https://chaquo.com/chaquopy/doc/current/changelog.html).
 
+## 9.0.0 (2020-11-06)
+
+* Update Android Gradle plugin to version 4.1.0.
+* Use `minifyEnabled` in release variant.
+* Move reusable files to `utils` package.
+
 ## 8.0.1 (2020-07-28)
 
 * Increase target API level to 30.

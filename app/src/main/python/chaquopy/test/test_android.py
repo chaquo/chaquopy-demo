@@ -2,9 +2,11 @@
 and should not be accessed or relied upon by user code.
 """
 
+import calendar
 from contextlib import contextmanager
 import imp
 from importlib import import_module, metadata, reload, resources
+import importlib.util
 from importlib.util import cache_from_source, MAGIC_NUMBER
 import marshal
 import os
@@ -12,29 +14,27 @@ from os.path import dirname, exists, join, splitext
 import pkgutil
 import platform
 import re
-import shlex
 from shutil import rmtree
-from subprocess import check_output
+import subprocess
 import sys
 from traceback import format_exc
 import types
 import unittest
 
+from .test_utils import API_LEVEL, FilterWarningsCase
+
 
 # Flags from PEP 3149.
 ABI_FLAGS = ""
 
+REQUIREMENTS = ["chaquopy-libcxx", "murmurhash", "Pygments"]
 
-try:
+if API_LEVEL:
     from android.os import Build
-except ImportError:
-    API_LEVEL = None
-else:
-    API_LEVEL = Build.VERSION.SDK_INT
-    from java.android import importer
-    context = __loader__.finder.context  # noqa: F821
-
     from com.chaquo.python.android import AndroidPlatform
+    from java.android import importer
+
+    context = __loader__.finder.context  # noqa: F821
     APP_ZIP = "app"
     REQS_COMMON_ZIP = "requirements-common"
     multi_abi = len([name for name in context.getAssets().list("chaquopy")
@@ -42,11 +42,18 @@ else:
     ABI = AndroidPlatform.ABI
     REQS_ABI_ZIP = f"requirements-{ABI}" if multi_abi else REQS_COMMON_ZIP
 
+    def asset_path(zip_name, *paths):
+        return join(context.getFilesDir().toString(), "chaquopy/AssetFinder",
+                    zip_name.partition("-")[0], *paths)
+
+    LIBCXX_FILENAME = asset_path(REQS_ABI_ZIP, "chaquopy/lib/libc++_shared.so")
+
+
 def setUpModule():
     if API_LEVEL is None:
         raise unittest.SkipTest("Not running on Android")
 
-class AndroidTestCase(unittest.TestCase):
+class AndroidTestCase(FilterWarningsCase):
     def assertPredicate(self, f, *args):
         self.check_predicate(self.assertTrue, f, *args)
 
@@ -57,7 +64,7 @@ class AndroidTestCase(unittest.TestCase):
         assertion(f(*args), f"{f.__name__}{args!r}")
 
 
-class TestAndroidPlatform(unittest.TestCase):
+class TestAndroidPlatform(AndroidTestCase):
 
     # 64-bit should be preferred on devices which support it. We use Build.SUPPORTED_ABIS to
     # detect support because Build.CPU_ABI always returns the active ABI of the app, which can
@@ -78,7 +85,8 @@ class TestAndroidPlatform(unittest.TestCase):
                               os.listdir(chaquopy_dir))
         self.assertCountEqual([ABI], os.listdir(join(chaquopy_dir, "bootstrap-native")))
         self.assertCountEqual(["java", "_csv.so", "_ctypes.so", "_datetime.so",  "_hashlib.so",
-                               "_struct.so", "binascii.so", "math.so", "mmap.so", "zlib.so"],
+                               "_random.so", "_struct.so", "binascii.so", "math.so", "mmap.so",
+                               "zlib.so"],
                               os.listdir(join(chaquopy_dir, "bootstrap-native", ABI)))
         self.assertCountEqual(["__init__.py", "chaquopy.so", "chaquopy_android.so"],
                               os.listdir(join(chaquopy_dir, "bootstrap-native", ABI, "java")))
@@ -115,8 +123,7 @@ class TestAndroidImport(AndroidTestCase):
         self.assertTrue(hasattr(mod, existing_attr))
 
         if cache_filename:
-            # A valid .pyc should not be written again. (We can't use the set_mode technique
-            # here because failure to write a .pyc is silently ignored.)
+            # A valid .pyc should not be written again.
             with self.assertNotModifies(cache_filename):
                 mod = self.clean_reload(mod)
             self.assertFalse(hasattr(mod, new_attr))
@@ -185,11 +192,11 @@ class TestAndroidImport(AndroidTestCase):
         import murmurhash.about
         loader = murmurhash.about.__loader__
         zip_name = REQS_COMMON_ZIP
-        with self.assertRaisesRegexp(ValueError,
-                                     r"AssetFinder\('{}'\) can't access '/invalid.py'"
-                                     .format(asset_path(zip_name, "murmurhash"))):
+        with self.assertRaisesRegex(ValueError,
+                                    r"AssetFinder\('{}'\) can't access '/invalid.py'"
+                                    .format(asset_path(zip_name, "murmurhash"))):
             loader.get_data("/invalid.py")
-        with self.assertRaisesRegexp(FileNotFoundError, "invalid.py"):
+        with self.assertRaisesRegex(FileNotFoundError, "invalid.py"):
             loader.get_data(asset_path(zip_name, "invalid.py"))
 
     def check_data(self, zip_name, package, filename, start):
@@ -220,26 +227,15 @@ class TestAndroidImport(AndroidTestCase):
         self.assertPredicate(exists, cache_filename)
 
         # An unchanged file should not be extracted again.
-        with self.set_mode(cache_filename, "444"):
+        with self.assertNotModifies(cache_filename):
             mod = self.clean_reload(mod)
 
         # A file with mismatching mtime should be extracted again.
         original_mtime = os.stat(cache_filename).st_mtime
         os.utime(cache_filename, None)
-        with self.set_mode(cache_filename, "444"):
-            with self.assertRaisesRegexp(OSError, "Permission denied"):
-                self.clean_reload(mod)
-        self.clean_reload(mod)
+        with self.assertModifies(cache_filename):
+            self.clean_reload(mod)
         self.assertEqual(original_mtime, os.stat(cache_filename).st_mtime)
-
-    @contextmanager
-    def set_mode(self, filename, mode_str):
-        original_mode = os.stat(filename).st_mode
-        try:
-            os.chmod(filename, int(mode_str, 8))
-            yield
-        finally:
-            os.chmod(filename, original_mode)
 
     def clean_reload(self, mod):
         sys.modules.pop(mod.__name__, None)
@@ -275,6 +271,7 @@ class TestAndroidImport(AndroidTestCase):
         spec = mod.__spec__
         self.assertEqual(mod_name, spec.name)
         self.assertIs(loader, spec.loader)
+        # spec.origin and the extract_so symlink workaround are covered by pyzmq/test.py.
 
         # Loader methods (get_data is tested elsewhere)
         self.assertEqual(is_package, loader.is_package(mod_name))
@@ -304,7 +301,7 @@ class TestAndroidImport(AndroidTestCase):
         try:
             from package1 import syntax_error  # noqa
         except SyntaxError:
-            self.assertRegexpMatches(
+            self.assertRegex(
                 format_exc(),
                 test_frame + import_frame +
                 fr'  File "{asset_path(APP_ZIP)}/package1/syntax_error.py", line 1\n'
@@ -318,7 +315,7 @@ class TestAndroidImport(AndroidTestCase):
         try:
             from package1 import recursive_import_error  # noqa
         except ImportError:
-            self.assertRegexpMatches(
+            self.assertRegex(
                 format_exc(),
                 test_frame + import_frame +
                 fr'  File "{asset_path(APP_ZIP)}/package1/recursive_import_error.py", '
@@ -332,7 +329,7 @@ class TestAndroidImport(AndroidTestCase):
         try:
             from package1 import recursive_other_error  # noqa
         except ValueError:
-            self.assertRegexpMatches(
+            self.assertRegex(
                 format_exc(),
                 test_frame + import_frame +
                 fr'  File "{asset_path(APP_ZIP)}/package1/recursive_other_error.py", '
@@ -354,7 +351,7 @@ class TestAndroidImport(AndroidTestCase):
             del murmurhash.__file__
             murmurhash.get_include()
         except NameError:
-            self.assertRegexpMatches(
+            self.assertRegex(
                 format_exc(),
                 test_frame +
                 fr'  File "{asset_path(REQS_COMMON_ZIP)}/murmurhash/__init__.py", '
@@ -371,7 +368,7 @@ class TestAndroidImport(AndroidTestCase):
             import json
             json.loads("hello")
         except json.JSONDecodeError:
-            self.assertRegexpMatches(
+            self.assertRegex(
                 format_exc(),
                 test_frame +
                 r'  File "stdlib/json/__init__.py", line \d+, in loads\n'
@@ -382,7 +379,7 @@ class TestAndroidImport(AndroidTestCase):
             self.fail()
 
     def test_imp(self):
-        with self.assertRaisesRegexp(ImportError, "No module named 'nonexistent'"):
+        with self.assertRaisesRegex(ImportError, "No module named 'nonexistent'"):
             imp.find_module("nonexistent")
 
         # See comment about torchvision below.
@@ -462,8 +459,8 @@ class TestAndroidImport(AndroidTestCase):
                 del sys.modules[name]
 
         # Renames in stdlib are not currently supported.
-        with self.assertRaisesRegexp(ImportError, "ChaquopyZipImporter does not support "
-                                     "loading module 'json' under a different name 'jason'"):
+        with self.assertRaisesRegex(ImportError, "ChaquopyZipImporter does not support "
+                                    "loading module 'json' under a different name 'jason'"):
             imp.load_module("jason", *imp.find_module("json"))
 
         def check_top_level(real_name, load_name, id):
@@ -510,6 +507,23 @@ class TestAndroidImport(AndroidTestCase):
         # important enough to investigate just now.
         self.assertFalse(hasattr(imp_rename_2, "mod_3"))
 
+    # Make sure the standard library importer implements the new loader API
+    # (https://stackoverflow.com/questions/63574951).
+    def test_zipimport(self):
+        for mod_name in ["zipfile",  # Imported during bootstrap
+                         "wave"]:    # Imported after bootstrap
+            with self.subTest(mod_name=mod_name):
+                old_mod = import_module(mod_name)
+                spec = importlib.util.find_spec(mod_name)
+                new_mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(new_mod)
+
+                self.assertIsNot(new_mod, old_mod)
+                for attr_name in ["__name__", "__file__"]:
+                    with self.subTest(attr_name=attr_name):
+                        self.assertEqual(getattr(new_mod, attr_name),
+                                         getattr(old_mod, attr_name))
+
     # See src/test/python/test.pth.
     def test_pth(self):
         import pth_generated
@@ -540,8 +554,7 @@ class TestAndroidImport(AndroidTestCase):
 
     def test_pr_distributions(self):
         import pkg_resources as pr
-        self.assertCountEqual(["chaquopy-libcxx", "murmurhash", "Pygments"],
-                              [dist.project_name for dist in pr.working_set])
+        self.assertCountEqual(REQUIREMENTS, [dist.project_name for dist in pr.working_set])
         self.assertEqual("0.28.0", pr.get_distribution("murmurhash").version)
 
     def test_pr_resources(self):
@@ -653,8 +666,7 @@ class TestAndroidImport(AndroidTestCase):
 
     def test_importlib_metadata(self):
         dists = list(metadata.distributions())
-        self.assertCountEqual(["chaquopy-libcxx", "murmurhash", "Pygments"],
-                              [d.metadata["Name"] for d in dists])
+        self.assertCountEqual(REQUIREMENTS, [d.metadata["Name"] for d in dists])
         for dist in dists:
             dist_info = str(dist._path)
             self.assertPredicate(str.startswith, dist_info, asset_path(REQS_COMMON_ZIP))
@@ -670,35 +682,30 @@ class TestAndroidImport(AndroidTestCase):
         self.assertEqual("Matthew Honnibal", dist.metadata["Author"])
         self.assertEqual(["chaquopy-libcxx (>=7000)"], dist.requires)
 
+    @contextmanager
     def assertModifies(self, filename):
-        return self.check_modifies(self.assertNotEqual, filename)
-
-    def assertNotModifies(self, filename):
-        return self.check_modifies(self.assertEqual, filename)
+        TEST_MTIME = calendar.timegm((2020, 1, 2, 3, 4, 5))
+        os.utime(filename, (TEST_MTIME, TEST_MTIME))
+        self.assertEqual(TEST_MTIME, os.stat(filename).st_mtime)
+        yield
+        self.assertNotEqual(TEST_MTIME, os.stat(filename).st_mtime)
 
     @contextmanager
-    def check_modifies(self, assertion, filename):
-        # The Android filesystem may only have 1-second resolution, and Device File Explorer
-        # only has 1-minute resolution, so we need to set the mtime to something at least that
-        # far away from the current time.
-        original_mtime = os.stat(filename).st_mtime
-        test_mtime = original_mtime - 60
-        os.utime(filename, (test_mtime, test_mtime))
+    def assertNotModifies(self, filename):
+        before_stat = os.stat(filename)
+        os.chmod(filename, before_stat.st_mode & ~0o222)
         try:
             yield
-            assertion(test_mtime, os.stat(filename).st_mtime)
+            after_stat = os.stat(filename)
+            self.assertEqual(before_stat.st_mtime, after_stat.st_mtime)
+            self.assertEqual(before_stat.st_ino, after_stat.st_ino)
         finally:
-            os.utime(filename, (original_mtime, original_mtime))
-
-
-def asset_path(zip_name, *paths):
-    return join(context.getFilesDir().toString(), "chaquopy/AssetFinder",
-                zip_name.partition("-")[0], *paths)
+            os.chmod(filename, before_stat.st_mode)
 
 
 # On Android, getDeclaredMethods and getDeclaredFields fail when the member's type refers to a
 # class that cannot be loaded. Test the partial workaround in Reflector.
-class TestAndroidReflect(unittest.TestCase):
+class TestAndroidReflect(AndroidTestCase):
 
     MEMBERS = ["tcFieldPublic", "tcFieldProtected", "tcMethodPublic", "tcMethodProtected",
                "iFieldPublic", "iFieldProtected", "iMethodPublic", "iMethodProtected",
@@ -739,30 +746,43 @@ class TestAndroidStdlib(AndroidTestCase):
         import ctypes
         from ctypes.util import find_library
 
-        libc = ctypes.CDLL(find_library("c"))
-        liblog = ctypes.CDLL(find_library("log"))
-        self.assertIsNone(find_library("nonexistent"))
-
-        from murmurhash import mrmr
-        os.remove(mrmr.__file__)
-        ctypes.CDLL(mrmr.__file__)
-        self.assertPredicate(exists, mrmr.__file__)
-
-        libcxx_filename = asset_path(REQS_ABI_ZIP, "chaquopy/lib/libc++_shared.so")
-        os.remove(libcxx_filename)
-        find_library_result = find_library("c++_shared")
-        self.assertIsInstance(find_library_result, str)
-        if platform.architecture()[0] == "32bit" or Build.VERSION.SDK_INT >= 23:
-            self.assertRegex(find_library_result, r"^/")
-        self.assertPredicate(exists, libcxx_filename)
-
-        # Work around double-underscore mangling of __android_log_write.
         def assertHasSymbol(dll, name):
             self.assertIsNotNone(getattr(dll, name))
         def assertNotHasSymbol(dll, name):
             with self.assertRaises(AttributeError):
                 getattr(dll, name)
 
+        # Library extraction caused by CDLL.
+        from murmurhash import mrmr
+        os.remove(mrmr.__file__)
+        ctypes.CDLL(mrmr.__file__)
+        self.assertPredicate(exists, mrmr.__file__)
+
+        # Library extraction caused by find_library.
+        os.remove(LIBCXX_FILENAME)
+        find_library_result = find_library("c++_shared")
+        self.assertIsInstance(find_library_result, str)
+
+        # This test covers non-Python libraries: for Python modules, see pyzmq/test.py.
+        if (platform.architecture()[0] == "64bit") and (API_LEVEL < 23):
+            self.assertNotIn("/", find_library_result)
+        else:
+            self.assertEqual(LIBCXX_FILENAME, find_library_result)
+
+        # Whether find_library returned an absolute filename or not, the file should have been
+        # extracted and the return value should be accepted by CDLL.
+        self.assertPredicate(exists, LIBCXX_FILENAME)
+        libcxx = ctypes.CDLL(find_library_result)
+        assertHasSymbol(libcxx, "_ZSt9terminatev")  # std::terminate()
+        assertNotHasSymbol(libcxx, "nonexistent")
+
+        # System libraries.
+        self.assertIsNotNone(find_library("c"))
+        self.assertIsNotNone(find_library("log"))
+        self.assertIsNone(find_library("nonexistent"))
+
+        libc = ctypes.CDLL(find_library("c"))
+        liblog = ctypes.CDLL(find_library("log"))
         assertHasSymbol(libc, "printf")
         assertHasSymbol(liblog, "__android_log_write")
         assertNotHasSymbol(libc, "__android_log_write")
@@ -855,13 +875,18 @@ class TestAndroidStdlib(AndroidTestCase):
 
     def test_os(self):
         self.assertEqual("posix", os.name)
-        self.assertEqual(str(context.getFilesDir()), os.path.expanduser("~"))
+        self.assertTrue(os.access(os.environ["HOME"], os.R_OK | os.W_OK | os.X_OK))
+
+        self.assertTrue(os.get_exec_path())
+        for name in os.get_exec_path():
+            with self.subTest(name=name):
+                self.assertTrue(os.access(name, os.X_OK))
 
     def test_platform(self):
         # Requires sys.executable to exist.
         import platform
         p = platform.platform()
-        self.assertRegexpMatches(p, r"^Linux")
+        self.assertRegex(p, r"^Linux")
 
     def test_select(self):
         import select
@@ -883,7 +908,17 @@ class TestAndroidStdlib(AndroidTestCase):
         from urllib.request import urlopen
         resp = urlopen("https://chaquo.com/chaquopy/")
         self.assertEqual(200, resp.getcode())
-        self.assertRegexpMatches(resp.info()["Content-type"], r"^text/html")
+        self.assertRegex(resp.info()["Content-type"], r"^text/html")
+
+    def test_subprocess(self):
+        # An executable on the PATH.
+        subprocess.run(["ls", os.environ["HOME"]])
+
+        # A nonexistent executable.
+        for name in ["nonexistent",                 # PATH search
+                     "/system/bin/nonexistent"]:    # Absolute filename
+            with self.subTest(name=name), self.assertRaises(FileNotFoundError):
+                subprocess.run([name])
 
     def test_sys(self):
         self.assertEqual(ABI_FLAGS, sys.abiflags)
@@ -925,7 +960,7 @@ class TestAndroidStdlib(AndroidTestCase):
                          time.strftime("%a, %d %b %Y %H:%M:%S", t))
 
 
-class TestAndroidStreams(unittest.TestCase):
+class TestAndroidStreams(AndroidTestCase):
 
     maxDiff = None
 
@@ -941,7 +976,8 @@ class TestAndroidStreams(unittest.TestCase):
     def tearDown(self):
         actual_log = None
         marker = "I/{}: {}".format(*self.get_marker())
-        for line in check_output(shlex.split("logcat -d -v tag")).decode("UTF-8").splitlines():
+        for line in subprocess.run(["logcat", "-d", "-v", "tag"],
+                                   capture_output=True, text=True).stdout.splitlines():
             if line == marker:
                 actual_log = []
             elif actual_log is not None and "/python.std" in line:

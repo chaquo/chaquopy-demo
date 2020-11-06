@@ -6,7 +6,80 @@ from java.lang import String
 from .test_utils import FilterWarningsCase
 
 
+# In order for test_set_slice to work, all elements must be different.
+SLICE_DATA = [2, 3, 5, 7, 11]
+
+SLICE_TESTS = [
+    # Basic
+    (slice(0, 1), [2]),
+    (slice(0, 2), [2, 3]),
+    (slice(0, 5), [2, 3, 5, 7, 11]),
+    (slice(1, 2), [3]),
+    (slice(1, 3), [3, 5]),
+
+    (slice(-5, -4), [2]),
+    (slice(-5, -3), [2, 3]),
+    (slice(-5, 5), [2, 3, 5, 7, 11]),
+    (slice(-4, -3), [3]),
+    (slice(-4, -2), [3, 5]),
+
+    # Open-ended
+    (slice(None, None), [2, 3, 5, 7, 11]),
+    (slice(0, None), [2, 3, 5, 7, 11]),
+    (slice(None, 1), [2]),
+    (slice(None, 2), [2, 3]),
+    (slice(1, None), [3, 5, 7, 11]),
+
+    (slice(-5, None), [2, 3, 5, 7, 11]),
+    (slice(None, -4), [2]),
+    (slice(None, -3), [2, 3]),
+    (slice(-4, None), [3, 5, 7, 11]),
+
+    # Truncated
+    (slice(2, 6), [5, 7, 11]),
+    (slice(-6, -2), [2, 3, 5]),
+
+    # Empty
+    (slice(0, 0), []),
+    (slice(1, 1), []),
+    (slice(1, 0), []),
+
+    (slice(-5, -5), []),
+    (slice(-4, -4), []),
+    (slice(-4, -5), []),
+
+    # Non-contiguous
+    (slice(None, None, 2), [2, 5, 11]),
+    (slice(1, None, 2), [3, 7]),
+    (slice(1, 3, 2), [3]),
+    (slice(None, None, 3), [2, 7]),
+    (slice(None, None, 4), [2, 11]),
+    (slice(None, None, 5), [2]),
+
+    (slice(-4, None, 2), [3, 7]),
+    (slice(-4, -2, 2), [3]),
+
+    # Reversed
+    (slice(None, None, -1), [11, 7, 5, 3, 2]),
+    (slice(None, None, -2), [11, 5, 2]),
+    (slice(3, None, -2), [7, 3]),
+    (slice(0, None, -1), [2]),
+    (slice(1, None, -1), [3, 2]),
+    (slice(4, 2, -1), [11, 7]),
+
+    (slice(-2, None, -2), [7, 3]),
+    (slice(-5, None, -1), [2]),
+    (slice(-4, None, -1), [3, 2]),
+    (slice(-1, -3, -1), [11, 7]),
+]
+
+
 class TestArray(FilterWarningsCase):
+    from .test_utils import assertTimeLimit
+
+    def setUp(self):
+        super().setUp()
+        self.index_error = self.assertRaisesRegex(IndexError, "array index out of range")
 
     def test_basic(self):
         array_C = jarray(jchar)("hello")
@@ -17,7 +90,7 @@ class TestArray(FilterWarningsCase):
         self.assertTrue(isinstance(array_C, jclass("java.lang.Cloneable")))
         self.assertTrue(isinstance(array_C, jclass("java.io.Serializable")))
         self.assertFalse(isinstance(array_C, jclass("java.io.Closeable")))
-        self.assertRegexpMatches(array_C.toString(), r"^\[C")
+        self.assertRegex(array_C.toString(), r"^\[C")
 
     def test_type_klass(self):
         self.assertIs(jarray(String), jarray(String.getClass()))
@@ -72,7 +145,7 @@ class TestArray(FilterWarningsCase):
             for field in ["object", "cloneable", "serializable"]:
                 setattr(TestArray, field, array)
                 self.assertEqual(array, getattr(TestArray, field))
-                with self.assertRaisesRegexp(TypeError, "Cannot convert"):
+                with self.assertRaisesRegex(TypeError, "Cannot convert"):
                     setattr(TestArray, "closeable", array)
 
     def test_cast(self):
@@ -92,28 +165,28 @@ class TestArray(FilterWarningsCase):
         self.assertIs(Boolean_array_Object, cast(Object, Boolean_array))
         self.assertIs(Boolean_array, cast(jarray(Boolean), Boolean_array_Object))
 
-        with self.assertRaisesRegexp(TypeError, r"cannot create boolean\[\] proxy from "
-                                     r"java.lang.Boolean\[\] instance"):
+        with self.assertRaisesRegex(TypeError, r"cannot create boolean\[\] proxy from "
+                                    r"java.lang.Boolean\[\] instance"):
             cast(jarray(jboolean), Boolean_array)
 
-        with self.assertRaisesRegexp(TypeError, r"cannot create java.lang.Object\[\] proxy from "
-                                     "java.lang.Object instance"):
+        with self.assertRaisesRegex(TypeError, r"cannot create java.lang.Object\[\] proxy from "
+                                    "java.lang.Object instance"):
             cast(jarray(Object), Object())
 
         Object_array = jarray(Object)([])
-        with self.assertRaisesRegexp(TypeError, r"cannot create java.lang.Boolean proxy from "
-                                     r"java.lang.Object\[\] instance"):
+        with self.assertRaisesRegex(TypeError, r"cannot create java.lang.Boolean proxy from "
+                                    r"java.lang.Object\[\] instance"):
             cast(Boolean, Object_array)
-        with self.assertRaisesRegexp(TypeError, r"cannot create java.lang.Boolean\[\] proxy from "
-                                     r"java.lang.Object\[\] instance"):
+        with self.assertRaisesRegex(TypeError, r"cannot create java.lang.Boolean\[\] proxy from "
+                                    r"java.lang.Object\[\] instance"):
             cast(jarray(Boolean), Object_array)
 
         Z_array = jarray(jboolean)([True, False])
-        with self.assertRaisesRegexp(TypeError, r"cannot create java.lang.Boolean\[\] proxy from "
-                                     r"boolean\[\] instance"):
+        with self.assertRaisesRegex(TypeError, r"cannot create java.lang.Boolean\[\] proxy from "
+                                    r"boolean\[\] instance"):
             cast(jarray(Boolean), Z_array)
-        with self.assertRaisesRegexp(TypeError, r"cannot create java.lang.Object\[\] proxy from "
-                                     r"boolean\[\] instance"):
+        with self.assertRaisesRegex(TypeError, r"cannot create java.lang.Object\[\] proxy from "
+                                    r"boolean\[\] instance"):
             cast(jarray(Object), Z_array)
 
     def test_output_arg(self):
@@ -124,31 +197,123 @@ class TestArray(FilterWarningsCase):
             # This version of getBytes returns the 8 low-order of each Unicode character.
             string.getBytes(0, 4, btarray, 0)
             if not isinstance(btarray, tuple):
-                self.assertEquals(btarray, [ctypes.c_int8(x).value
-                                            for x in [0x56, 0x78, 0x90, 0xAB]])
+                self.assertEqual(btarray, [ctypes.c_int8(x).value
+                                           for x in [0x56, 0x78, 0x90, 0xAB]])
 
     def test_multiple_dimensions(self):
         Arrays = jclass('com.chaquo.python.TestArray')
         matrix = [[1, 2, 3],
                   [4, 5, 6],
                   [7, 8, 9]]
-        self.assertEquals(Arrays.methodParamsMatrixI(matrix), True)
-        self.assertEquals(Arrays.methodReturnMatrixI(), matrix)
+        self.assertEqual(Arrays.methodParamsMatrixI(matrix), True)
+        self.assertEqual(Arrays.methodReturnMatrixI(), matrix)
+
+    def test_get_int(self):
+        a = jarray(jint)([2, 3, 5, 7, 11])
+
+        self.assertEqual(2, a[0])
+        self.assertEqual(3, a[1])
+        self.assertEqual(11, a[4])
+        with self.index_error:
+            a[5]
+        with self.index_error:
+            jarray(jint)([])[0]
+
+        self.assertEqual(11, a[-1])
+        self.assertEqual(7, a[-2])
+        self.assertEqual(2, a[-5])
+        with self.index_error:
+            a[-6]
+
+    def test_set_int(self):
+        a = jarray(jint)([2, 3, 5, 7, 11])
+
+        a[0] = 0
+        a[1] = 10
+        a[4] = 40
+        self.assertEqual([0, 10, 5, 7, 40], a)
+        with self.index_error:
+            a[5] = 50
+        with self.index_error:
+            jarray(jint)([])[0] = 99
+
+        a[-1] = -10
+        a[-2] = -20
+        a[-5] = -50
+        self.assertEqual([-50, 10, 5, -20, -10], a)
+        with self.index_error:
+            a[-6] = -60
+
+    def test_get_slice(self):
+        a = jarray(jint)(SLICE_DATA)
+        for key, expected in SLICE_TESTS:
+            actual = a[key]
+            self.assertIsInstance(actual, jarray(jint))
+            self.assertEqual(expected, actual)
+
+        # Without optimization, this takes over 5 seconds.
+        a = jarray(jint)(500000)
+        with self.assertTimeLimit(0.5):
+            self.assertIsNot(a[:], a)
+
+    def test_set_slice(self):
+        for key, replaced in SLICE_TESTS:
+            with self.subTest(key=key, replaced=replaced):
+                a = jarray(jint)(SLICE_DATA)
+                expected = [99 if x in replaced else x
+                            for x in a]
+                a[key] = [99] * len(replaced)
+                self.assertEqual(expected, a)
+
+        # Length mismatch
+        a = jarray(jint)(SLICE_DATA)
+        for value in [[], [99, 99]]:
+            with self.subTest(value=value), \
+                 self.assertRaisesRegex(ValueError, f"can't set slice of length 1 from value "
+                                        f"of length {len(value)}"):
+                a[0:1] = value
+
+        # Arrays of different types.
+        a = jarray(jint)(SLICE_DATA)
+        with self.assertRaisesRegex(TypeError, "Cannot convert float object to int"):
+            a[:2] = jarray(jfloat)([99, 99])
+
+        a = jarray(jfloat)(SLICE_DATA)
+        a[:2] = jarray(jint)([99, 99])
+        self.assertEqual([99, 99, 5, 7, 11], a)
+
+        # Without optimization, this takes over 200 seconds. The test_get_slice equivalent is
+        # probably faster because Cython compiles the __getitem__ loop into native code, so
+        # leave the array size unchanged in case a future Cython version extends this to more
+        # situations.
+        a = jarray(jint)(500000)
+        b = jarray(jint)(500000)
+        with self.assertTimeLimit(0.5):
+            a[:] = b
+
+    def test_invalid_index(self):
+        a = jarray(jint)([2, 3, 5, 7, 11])
+        index_type_error = \
+            self.assertRaisesRegex(TypeError, "array indices must be integers or slices, not str")
+        with index_type_error:
+            a["hello"]
+        with index_type_error:
+            a["hello"] = 4
 
     # Most of the positive tests are in test_conversion, but here are some error tests.
     def test_modify(self):
         Object = jclass("java.lang.Object")
         array_Z = jarray(jboolean)([True, False])
-        with self.assertRaisesRegexp(TypeError, "Cannot convert int object to boolean"):
+        with self.assertRaisesRegex(TypeError, "Cannot convert int object to boolean"):
             array_Z[0] = 1
-        with self.assertRaisesRegexp(TypeError, "Cannot convert Object object to boolean"):
+        with self.assertRaisesRegex(TypeError, "Cannot convert Object object to boolean"):
             array_Z[0] = Object()
 
         Boolean = jclass("java.lang.Boolean")
         array_Boolean = jarray(Boolean)([True, False])
-        with self.assertRaisesRegexp(TypeError, "Cannot convert int object to java.lang.Boolean"):
+        with self.assertRaisesRegex(TypeError, "Cannot convert int object to java.lang.Boolean"):
             array_Boolean[0] = 1
-        with self.assertRaisesRegexp(TypeError, "Cannot convert int object to java.lang.Boolean"):
+        with self.assertRaisesRegex(TypeError, "Cannot convert int object to java.lang.Boolean"):
             cast(jarray(Object), array_Boolean)[0] = 1
 
         array_Object = jarray(Object)([True, False])
@@ -239,6 +404,7 @@ class TestArray(FilterWarningsCase):
         (jfloat, "f", 4, [-float("inf"), -1.5, 0, 1.5, float("inf")]),
         (jdouble, "d", 8, [-float("inf"), -1e300, 0, 1e300, float("inf")])]
 
+    # See also the NumPy package tests.
     def test_buffer_j2p(self):
         for element_type, format, itemsize, values in self.BUFFER_TESTS:
             for input in [[], values]:
@@ -270,6 +436,7 @@ class TestArray(FilterWarningsCase):
             with self.assertRaisesRegex(TypeError, "a bytes-like object is required"):
                 memoryview(jarray(element_type)([]))
 
+    # See also the NumPy package tests.
     def test_buffer_p2j(self):
         import array
         sizeof_long = array.array("l").itemsize  # May be 4 or 8.
@@ -337,7 +504,7 @@ class TestArray(FilterWarningsCase):
         self.assertFalse(b == a)
 
     def test_hash(self):
-        with self.assertRaisesRegexp(TypeError, "unhashable type"):
+        with self.assertRaisesRegex(TypeError, "unhashable type"):
             hash(jarray(jboolean)([]))
 
     def test_add(self):
