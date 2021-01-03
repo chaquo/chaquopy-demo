@@ -64,6 +64,9 @@ def throws_python(msg="abc olé 中文"):
     raise ValueError(msg)
 
 
+def get_none():
+    return
+
 def is_none(x):
     return x is None
 
@@ -80,6 +83,12 @@ float_var = 43.5
 double_var = 1e39
 str_var = "hello"
 char_var = "x"
+
+class ManyAttributes:
+    def __init__(self):
+        for i in range(1000):
+            setattr(self, str(i), str(i))
+many_attributes = ManyAttributes()
 
 char_list_var = ["a", "b", "c"]
 int_list_var = [11, 22, 33]
