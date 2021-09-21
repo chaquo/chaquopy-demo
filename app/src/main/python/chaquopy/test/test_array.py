@@ -4,6 +4,7 @@ from java import (cast, jarray, jboolean, jbyte, jchar, jclass, jdouble, jfloat,
 from java.lang import String
 
 from .test_utils import FilterWarningsCase
+from com.chaquo.python import TestArray as TA
 
 
 # In order for test_set_slice to work, all elements must be different.
@@ -137,16 +138,17 @@ class TestArray(FilterWarningsCase):
     def test_conversion(self):
         Object = jclass("java.lang.Object")
         Integer = jclass("java.lang.Integer")
-        TestArray = jclass('com.chaquo.python.TestArray')
         # All object arrays, primitive arrays, and Python iterables are assignable to Object,
         # Cloneable and Serializable
         for array in [jarray(Object)(["hello", 42]), jarray(Integer)([11, 22]),
                       jarray(jboolean)([False, True]), [False, True]]:
-            for field in ["object", "cloneable", "serializable"]:
-                setattr(TestArray, field, array)
-                self.assertEqual(array, getattr(TestArray, field))
+            with self.subTest(array=array):
+                for field in ["object", "cloneable", "serializable"]:
+                    with self.subTest(field=field):
+                        setattr(TA, field, array)
+                        self.assertEqual(array, getattr(TA, field))
                 with self.assertRaisesRegex(TypeError, "Cannot convert"):
-                    setattr(TestArray, "closeable", array)
+                    setattr(TA, "closeable", array)
 
     def test_cast(self):
         Object = jclass("java.lang.Object")
@@ -200,13 +202,19 @@ class TestArray(FilterWarningsCase):
                 self.assertEqual(btarray, [ctypes.c_int8(x).value
                                            for x in [0x56, 0x78, 0x90, 0xAB]])
 
+        for method in ["arraySort", "arraySortObject"]:
+            for input in [[], [42], [5, 7, 2, 11, 3]]:
+                with self.subTest(method=method, input=input):
+                    l = input.copy()
+                    getattr(TA, method)(l)
+                    self.assertEqual(sorted(input), l)
+
     def test_multiple_dimensions(self):
-        Arrays = jclass('com.chaquo.python.TestArray')
         matrix = [[1, 2, 3],
                   [4, 5, 6],
                   [7, 8, 9]]
-        self.assertEqual(Arrays.methodParamsMatrixI(matrix), True)
-        self.assertEqual(Arrays.methodReturnMatrixI(), matrix)
+        self.assertEqual(TA.methodParamsMatrixI(matrix), True)
+        self.assertEqual(TA.methodReturnMatrixI(), matrix)
 
     def test_get_int(self):
         a = jarray(jint)([2, 3, 5, 7, 11])
@@ -301,13 +309,17 @@ class TestArray(FilterWarningsCase):
             a[:] = b
 
     def test_invalid_index(self):
-        a = jarray(jint)([2, 3, 5, 7, 11])
-        index_type_error = \
-            self.assertRaisesRegex(TypeError, "array indices must be integers or slices, not str")
-        with index_type_error:
-            a["hello"]
-        with index_type_error:
-            a["hello"] = 4
+        a = jarray(jint)(SLICE_DATA)
+        for index in ["", "hello", 0.0, 1.0]:
+            with self.subTest(index=index):
+                error = self.assertRaisesRegex(
+                    TypeError, fr"array indices must be integers or slices, not "
+                    fr"{type(index).__name__}")
+                with error:
+                    a[index]
+                with error:
+                    a[index] = 99
+                self.assertEqual(SLICE_DATA, a)
 
     # Most of the positive tests are in test_conversion, but here are some error tests.
     def test_modify(self):
@@ -468,13 +480,16 @@ class TestArray(FilterWarningsCase):
 
     def test_abc(self):
         from collections import abc
-        for element_type_1d in [jboolean, jbyte, jshort, jint, jlong, jfloat, jdouble, jchar,
-                                String]:
-            for element_type in [element_type_1d, jarray(element_type_1d)]:
-                with self.subTest(element_type=element_type):
-                    cls = jarray(element_type)
-                    self.assertTrue(issubclass(cls, abc.MutableSequence))
-                    self.assertTrue(isinstance(cls([]), abc.MutableSequence))
+        for element_type in [jboolean, jbyte, jshort, jint, jlong, jfloat, jdouble, jchar,
+                             String, jarray(String)]:
+            with self.subTest(element_type=element_type):
+                a = jarray(element_type)([])
+                self.assertIsInstance(a, abc.Sequence)
+                self.assertNotIsInstance(a, abc.MutableSequence)
+                for method in ["__getitem__", "__len__", "__contains__", "__iter__",
+                               "__reversed__", "index", "count"]:
+                    with self.subTest(method=method):
+                        self.assertTrue(hasattr(a, method))
 
     def test_truth(self):
         self.assertFalse(jarray(jboolean)([]))
@@ -532,15 +547,59 @@ class TestArray(FilterWarningsCase):
         hw = jarray(String)(["hello", "world"])
         self.assertEqual([True, False, "hello", "world"], tf + hw)
 
-    def test_iter(self):
-        a = jarray(jint)([1, 2, 3])
-        self.assertEqual([1, 2, 3], [x for x in a])
-
-    def test_in(self):
-        a = jarray(jint)([1, 2])
+    def test_contains(self):
+        a = jarray(jint)([1, 4, 1, 2])
+        self.assertFalse(0 in a)
         self.assertTrue(1 in a)
         self.assertTrue(2 in a)
         self.assertFalse(3 in a)
+        self.assertTrue(4 in a)
+        self.assertFalse(5 in a)
+
+        empty = jarray(jint)([])
+        self.assertFalse(0 in empty)
+        self.assertFalse(1 in empty)
+
+    def test_iter(self):
+        for data in [[], [1], [2, 3], [4, 5, 6]]:
+            with self.subTest(data=data):
+                a = jarray(jint)(data)
+                self.assertEqual(data, [x for x in a])
+
+    def test_reversed(self):
+        for data in [[], [1], [2, 3], [4, 5, 6]]:
+            with self.subTest(data=data):
+                a = jarray(jint)(data)
+                self.assertEqual(list(reversed(data)), list(reversed(a)))
+
+    def test_index(self):
+        a = jarray(jint)([1, 4, 1, 2])
+        self.assertEqual(0, a.index(1))
+        self.assertEqual(3, a.index(2))
+        self.assertEqual(1, a.index(4))
+        for value in [0, 3, 5]:
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    a.index(value)
+
+        empty = jarray(jint)([])
+        for value in [0, 1]:
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    empty.index(value)
+
+    def test_count(self):
+        a = jarray(jint)([1, 4, 1, 2])
+        self.assertEqual(0, a.count(0))
+        self.assertEqual(2, a.count(1))
+        self.assertEqual(1, a.count(2))
+        self.assertEqual(0, a.count(3))
+        self.assertEqual(1, a.count(4))
+        self.assertEqual(0, a.count(5))
+
+        empty = jarray(jint)([])
+        self.assertEqual(0, empty.count(0))
+        self.assertEqual(0, empty.count(1))
 
     def test_attributes(self):
         a = jarray(jint)([1, 2, 3])

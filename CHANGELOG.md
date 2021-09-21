@@ -3,6 +3,10 @@
 This file only records changes to the demo app. For changes to the Chaquopy SDK itself, see
 [its own change log](https://chaquo.com/chaquopy/doc/current/changelog.html).
 
+## 10.0.1 (2021-09-22)
+
+* Increase target API level to 31.
+
 ## 9.1.0 (2021-01-02)
 
 * Update Android Gradle plugin to version 4.1.1.
