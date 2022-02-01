@@ -3,6 +3,12 @@
 This file only records changes to the demo app. For changes to the Chaquopy SDK itself, see
 [its own change log](https://chaquo.com/chaquopy/doc/current/changelog.html).
 
+## 11.0.0 (2021-02-01)
+
+* Migrate to new Gradle `pluginManagement` and `plugins` syntax.
+* Migrate from deprecated jcenter repository to mavenCentral.
+* Update Android Gradle plugin to version 7.0.4.
+
 ## 10.0.1 (2021-09-22)
 
 * Increase target API level to 31.

@@ -85,13 +85,20 @@ class TestAndroidPlatform(AndroidTestCase):
         self.assertCountEqual(["AssetFinder", "bootstrap-native", "bootstrap.imy",
                                "cacert.pem", "stdlib-common.imy", "ticket.txt"],
                               os.listdir(chaquopy_dir))
-        self.assertCountEqual([ABI], os.listdir(join(chaquopy_dir, "bootstrap-native")))
-        self.assertCountEqual(["java", "_csv.so", "_ctypes.so", "_datetime.so",  "_hashlib.so",
-                               "_json.so", "_random.so", "_struct.so", "binascii.so",
-                               "math.so", "mmap.so", "zlib.so"],
-                              os.listdir(join(chaquopy_dir, "bootstrap-native", ABI)))
-        self.assertCountEqual(["chaquopy.so", "chaquopy_android.so"],
-                              os.listdir(join(chaquopy_dir, "bootstrap-native", ABI, "java")))
+        bn_dir = f"{chaquopy_dir}/bootstrap-native"
+        self.assertCountEqual([ABI], os.listdir(bn_dir))
+
+        for subdir, entries in [
+            (ABI, ["java", "_csv.so", "_ctypes.so", "_datetime.so", "_hashlib.so", "_json.so",
+                   "_random.so", "_struct.so", "binascii.so",  "math.so", "mmap.so", "zlib.so"]),
+            (f"{ABI}/java", ["chaquopy.so", "chaquopy_android.so"]),
+        ]:
+            with self.subTest(subdir=subdir):
+                # Create a stray file which should be removed on the next startup.
+                pid_txt = f"{os.getpid()}.txt"
+                with open(f"{bn_dir}/{subdir}/{pid_txt}", "w"):
+                    pass
+                self.assertCountEqual(entries + [pid_txt], os.listdir(f"{bn_dir}/{subdir}"))
 
 
 class TestAndroidImport(AndroidTestCase):
@@ -921,6 +928,12 @@ class TestAndroidStdlib(AndroidTestCase):
         for name in os.get_exec_path():
             with self.subTest(name=name):
                 self.assertTrue(os.access(name, os.X_OK))
+
+    def test_pickle(self):
+        import pickle
+        # This attribute will only exist if the native _pickle module was available when
+        # pickle was first imported.
+        self.assertTrue(pickle.PickleBuffer)
 
     def test_platform(self):
         # Requires sys.executable to exist.

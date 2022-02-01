@@ -1,6 +1,8 @@
-apply plugin: 'com.android.application'
-apply plugin: 'kotlin-android'
-apply plugin: 'com.chaquo.python'  // Must come after com.android.application
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'com.chaquo.python'  // Must come after com.android.application
+}
 
 afterEvaluate {
     def assetsSrcDir = "src/main/assets/source"
@@ -24,7 +26,7 @@ android {
         minSdkVersion 16
         targetSdkVersion 31
 
-        versionName '10.0.1'
+        versionName '11.0.0'
         def verParsed = versionName.split(/\./).collect { Integer.parseInt(it) }
         versionCode ((verParsed[0] * 1000000) + (verParsed[1] * 1000) + (verParsed[2] * 10) + 1)
 
@@ -85,7 +87,6 @@ dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:1.1.3'
     implementation 'androidx.lifecycle:lifecycle-extensions:2.1.0'
     implementation 'androidx.preference:preference:1.1.1'
-    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
     implementation 'junit:junit:4.12'
     implementation 'org.hamcrest:hamcrest-library:2.2'
 
