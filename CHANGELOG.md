@@ -3,7 +3,11 @@
 This file only records changes to the demo app. For changes to the Chaquopy SDK itself, see
 [its own change log](https://chaquo.com/chaquopy/doc/current/changelog.html).
 
-## 11.0.0 (2021-02-01)
+## 12.0.0 (2022-05-12)
+
+* No changes except for the SDK update.
+
+## 11.0.0 (2022-02-01)
 
 * Migrate to new Gradle `pluginManagement` and `plugins` syntax.
 * Migrate from deprecated jcenter repository to mavenCentral.
