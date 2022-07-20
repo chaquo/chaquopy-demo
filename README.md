@@ -12,6 +12,4 @@ The app includes:
 * An example of how to use a Python library installed from PyPI in a normal Java activity.
 * The SDK's complete unit test suite.
 
-Please use the GitHub issue tracker to report issues with both the demo app and the SDK itself.
-
 For more details, see the [Chaquopy website](https://chaquo.com/chaquopy/).
