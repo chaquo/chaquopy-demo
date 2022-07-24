@@ -3,6 +3,10 @@
 This file only records changes to the demo app. For changes to the Chaquopy SDK itself, see
 [its own change log](https://chaquo.com/chaquopy/doc/current/changelog.html).
 
+## 12.0.1 (2022-07-24)
+
+* No changes except for the SDK update.
+
 ## 12.0.0 (2022-05-12)
 
 * No changes except for the SDK update.
