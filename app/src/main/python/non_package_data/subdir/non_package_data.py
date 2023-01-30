@@ -1,1 +1,0 @@
-# Python file in subdirectory, used by TestAndroidImport.test_non_package_data.

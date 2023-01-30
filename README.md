@@ -1,5 +1,4 @@
-# Chaquopy demo
+# Chaquopy demo app
 
-**This project is archived**, as the Chaquopy demo app is now developed in the same
-repository as Chaquopy itself. See
+The Chaquopy demo app is now developed in the main Chaquopy repository. See
 [here](https://github.com/chaquo/chaquopy/tree/master/demo) for the current version.
